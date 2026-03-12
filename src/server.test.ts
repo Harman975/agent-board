@@ -300,4 +300,452 @@ describe("PUT /api/channels/:name/priority", () => {
     });
     assert.equal(res.status, 403);
   });
+
+  it("requires priority to be a number", async () => {
+    const res = await req("PUT", "/api/channels/%23general/priority", {
+      key: adminKey,
+      body: { priority: "high" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("returns 404 for nonexistent channel", async () => {
+    const res = await req("PUT", "/api/channels/%23nope/priority", {
+      key: adminKey,
+      body: { priority: 10 },
+    });
+    assert.equal(res.status, 404);
+  });
+});
+
+// === GET /api/agents/:handle ===
+
+describe("GET /api/agents/:handle", () => {
+  it("returns agent by handle", async () => {
+    await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@lookup", mission: "find me" },
+    });
+    const res = await req("GET", "/api/agents/%40lookup", { key: adminKey });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.handle, "@lookup");
+    assert.equal(data.mission, "find me");
+  });
+
+  it("returns 404 for nonexistent agent", async () => {
+    const res = await req("GET", "/api/agents/%40ghost", { key: adminKey });
+    assert.equal(res.status, 404);
+  });
+});
+
+// === PATCH /api/agents/:handle ===
+
+describe("PATCH /api/agents/:handle", () => {
+  it("updates agent fields", async () => {
+    await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@patchme", mission: "old mission" },
+    });
+    const res = await req("PATCH", "/api/agents/%40patchme", {
+      key: adminKey,
+      body: { mission: "new mission", status: "blocked" },
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.mission, "new mission");
+    assert.equal(data.status, "blocked");
+  });
+
+  it("returns 404 for nonexistent agent", async () => {
+    const res = await req("PATCH", "/api/agents/%40ghost", {
+      key: adminKey,
+      body: { mission: "nothing" },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it("requires admin key", async () => {
+    const createRes = await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@worker", mission: "work" },
+    });
+    const { api_key: agentKey } = await createRes.json();
+
+    const res = await req("PATCH", "/api/agents/%40worker", {
+      key: agentKey,
+      body: { mission: "hacked" },
+    });
+    assert.equal(res.status, 403);
+  });
+});
+
+// === POST /api/channels ===
+
+describe("POST /api/channels", () => {
+  it("creates a channel", async () => {
+    const res = await req("POST", "/api/channels", {
+      key: adminKey,
+      body: { name: "test-chan", description: "A test channel" },
+    });
+    assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.equal(data.name, "#test-chan");
+    assert.equal(data.description, "A test channel");
+  });
+
+  it("rejects duplicate channel", async () => {
+    await req("POST", "/api/channels", {
+      key: adminKey,
+      body: { name: "dupe-chan" },
+    });
+    const res = await req("POST", "/api/channels", {
+      key: adminKey,
+      body: { name: "dupe-chan" },
+    });
+    assert.equal(res.status, 409);
+  });
+
+  it("requires name", async () => {
+    const res = await req("POST", "/api/channels", {
+      key: adminKey,
+      body: { description: "no name" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("requires admin key", async () => {
+    const createRes = await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@worker", mission: "work" },
+    });
+    const { api_key: agentKey } = await createRes.json();
+
+    const res = await req("POST", "/api/channels", {
+      key: agentKey,
+      body: { name: "agent-chan" },
+    });
+    assert.equal(res.status, 403);
+  });
+});
+
+// === GET /api/channels ===
+
+describe("GET /api/channels", () => {
+  it("returns channels with priorities", async () => {
+    await req("PUT", "/api/channels/%23general/priority", {
+      key: adminKey,
+      body: { priority: 42 },
+    });
+    const res = await req("GET", "/api/channels", { key: adminKey });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    const general = data.find((ch: any) => ch.name === "#general");
+    assert.ok(general);
+    assert.equal(general.priority, 42);
+  });
+
+  it("defaults priority to 0 for channels without priority", async () => {
+    const res = await req("GET", "/api/channels", { key: adminKey });
+    const data = await res.json();
+    const general = data.find((ch: any) => ch.name === "#general");
+    assert.equal(general.priority, 0);
+  });
+});
+
+// === GET /api/posts ===
+
+describe("GET /api/posts", () => {
+  it("returns posts filtered by author", async () => {
+    await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@a1", mission: "test" },
+    });
+    const a1Res = await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@a2", mission: "test" },
+    });
+
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "by admin", channel: "#general", author: "@admin" },
+    });
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "by a1", channel: "#general", author: "@a1" },
+    });
+
+    const res = await req("GET", "/api/posts?author=%40admin", { key: adminKey });
+    const data = await res.json();
+    assert.ok(data.every((p: any) => p.author === "@admin"));
+  });
+
+  it("returns posts filtered by channel", async () => {
+    await req("POST", "/api/channels", {
+      key: adminKey,
+      body: { name: "other" },
+    });
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "in general", channel: "#general", author: "@admin" },
+    });
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "in other", channel: "#other", author: "@admin" },
+    });
+
+    const res = await req("GET", "/api/posts?channel=%23other", { key: adminKey });
+    const data = await res.json();
+    assert.ok(data.every((p: any) => p.channel === "#other"));
+  });
+
+  it("returns top-level posts only", async () => {
+    const postRes = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "root", channel: "#general", author: "@admin" },
+    });
+    const root = await postRes.json();
+
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "reply", channel: "#general", author: "@admin", parent_id: root.id },
+    });
+
+    const res = await req("GET", "/api/posts?top_level=true", { key: adminKey });
+    const data = await res.json();
+    assert.ok(data.every((p: any) => p.parent_id === null));
+  });
+
+  it("respects limit parameter", async () => {
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "a", channel: "#general", author: "@admin" },
+    });
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "b", channel: "#general", author: "@admin" },
+    });
+
+    const res = await req("GET", "/api/posts?limit=1", { key: adminKey });
+    const data = await res.json();
+    assert.equal(data.length, 1);
+  });
+});
+
+// === GET /api/posts/:id ===
+
+describe("GET /api/posts/:id", () => {
+  it("returns post by id", async () => {
+    const createRes = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "find me", channel: "#general", author: "@admin" },
+    });
+    const post = await createRes.json();
+
+    const res = await req("GET", `/api/posts/${post.id}`, { key: adminKey });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.content, "find me");
+  });
+
+  it("returns 404 for nonexistent post", async () => {
+    const res = await req("GET", "/api/posts/nonexistent-id", { key: adminKey });
+    assert.equal(res.status, 404);
+  });
+});
+
+// === GET /api/posts/:id/thread ===
+
+describe("GET /api/posts/:id/thread", () => {
+  it("returns thread with replies", async () => {
+    const rootRes = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "root", channel: "#general", author: "@admin" },
+    });
+    const root = await rootRes.json();
+
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "reply", channel: "#general", author: "@admin", parent_id: root.id },
+    });
+
+    const res = await req("GET", `/api/posts/${root.id}/thread`, { key: adminKey });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.post.content, "root");
+    assert.equal(data.replies.length, 1);
+    assert.equal(data.replies[0].post.content, "reply");
+  });
+
+  it("returns 404 for nonexistent post", async () => {
+    const res = await req("GET", "/api/posts/nonexistent-id/thread", { key: adminKey });
+    assert.equal(res.status, 404);
+  });
+});
+
+// === POST /api/commits ===
+
+describe("POST /api/commits", () => {
+  it("links a commit to a post", async () => {
+    const postRes = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "did work", channel: "#general", author: "@admin" },
+    });
+    const post = await postRes.json();
+
+    const res = await req("POST", "/api/commits", {
+      key: adminKey,
+      body: { hash: "abc123", post_id: post.id, files: ["a.ts", "b.ts"] },
+    });
+    assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.equal(data.hash, "abc123");
+    assert.deepStrictEqual(data.files, ["a.ts", "b.ts"]);
+  });
+
+  it("requires hash and post_id", async () => {
+    const res = await req("POST", "/api/commits", {
+      key: adminKey,
+      body: { hash: "abc" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("rejects duplicate commit hash", async () => {
+    const postRes = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "work", channel: "#general", author: "@admin" },
+    });
+    const post = await postRes.json();
+
+    await req("POST", "/api/commits", {
+      key: adminKey,
+      body: { hash: "dupe", post_id: post.id },
+    });
+    const res = await req("POST", "/api/commits", {
+      key: adminKey,
+      body: { hash: "dupe", post_id: post.id },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("rejects commit for nonexistent post", async () => {
+    const res = await req("POST", "/api/commits", {
+      key: adminKey,
+      body: { hash: "orphan", post_id: "fake-id" },
+    });
+    assert.equal(res.status, 400);
+  });
+});
+
+// === Auth edge cases ===
+
+describe("auth edge cases", () => {
+  it("rejects Authorization header without Bearer prefix", async () => {
+    const res = await app.request("/api/agents", {
+      method: "GET",
+      headers: { Authorization: `Token ${adminKey}` },
+    });
+    assert.equal(res.status, 401);
+  });
+
+  it("rejects empty Bearer token", async () => {
+    const res = await app.request("/api/agents", {
+      method: "GET",
+      headers: { Authorization: "Bearer " },
+    });
+    assert.equal(res.status, 401);
+  });
+});
+
+// === POST /api/posts edge cases ===
+
+describe("POST /api/posts edge cases", () => {
+  it("requires content and channel", async () => {
+    const res = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { author: "@admin" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("returns 400 for nonexistent channel", async () => {
+    const res = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "test", channel: "#nope", author: "@admin" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("returns 400 for nonexistent parent_id", async () => {
+    const res = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "reply", channel: "#general", author: "@admin", parent_id: "fake" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("agent key cannot post as different agent", async () => {
+    await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@bot1", mission: "one" },
+    });
+    const res2 = await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@bot2", mission: "two" },
+    });
+    const { api_key: bot2Key } = await res2.json();
+
+    // bot2's key should post as bot2, ignoring body.author
+    const postRes = await req("POST", "/api/posts", {
+      key: bot2Key,
+      body: { content: "sneaky", channel: "#general", author: "@bot1" },
+    });
+    assert.equal(postRes.status, 201);
+    const data = await postRes.json();
+    assert.equal(data.author, "@bot2"); // enforced by key, not body
+  });
+});
+
+// === GET /api/feed edge cases ===
+
+describe("GET /api/feed edge cases", () => {
+  it("filters by author", async () => {
+    await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@feeder", mission: "feed" },
+    });
+
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "admin post", channel: "#general", author: "@admin" },
+    });
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "feeder post", channel: "#general", author: "@feeder" },
+    });
+
+    const res = await req("GET", "/api/feed?author=%40feeder", { key: adminKey });
+    const data = await res.json();
+    assert.ok(data.every((p: any) => p.author === "@feeder"));
+  });
+
+  it("respects limit parameter", async () => {
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "a", channel: "#general", author: "@admin" },
+    });
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "b", channel: "#general", author: "@admin" },
+    });
+    await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "c", channel: "#general", author: "@admin" },
+    });
+
+    const res = await req("GET", "/api/feed?limit=2", { key: adminKey });
+    const data = await res.json();
+    assert.equal(data.length, 2);
+  });
 });

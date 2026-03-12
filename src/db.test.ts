@@ -1,13 +1,13 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
-import { initDb } from "./db.js";
+import { initDb, dbExists } from "./db.js";
 import { createAgent, getAgent, listAgents, updateAgent } from "./agents.js";
 import { createChannel, getChannel, listChannels } from "./channels.js";
 import { createPost, getPost, listPosts, getThread } from "./posts.js";
 import { linkCommit, getCommit, listCommitsByPost } from "./commits.js";
 import { generateKey, hashKey, storeKey, validateKey, isAdminKey, revokeKey } from "./auth.js";
 import { checkRateLimit, resetRateLimits } from "./ratelimit.js";
-import { setChannelPriority, getChannelPriority, getFeed, getBriefing, parseDuration } from "./supervision.js";
+import { setChannelPriority, getChannelPriority, listChannelPriorities, getFeed, getBriefing, getCursor, setCursor, parseDuration } from "./supervision.js";
 import type Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
@@ -92,6 +92,46 @@ describe("agents", () => {
   it("returns null for missing agent", () => {
     assert.equal(getAgent(db, "nonexistent"), null);
   });
+
+  it("updateAgent with no fields returns agent unchanged", () => {
+    createAgent(db, { handle: "noop", name: "NoOp", mission: "stay same" });
+    const result = updateAgent(db, "noop", {});
+    assert.equal(result?.mission, "stay same");
+    assert.equal(result?.name, "NoOp");
+  });
+
+  it("updateAgent on nonexistent agent returns null", () => {
+    const result = updateAgent(db, "ghost", { name: "Ghost" });
+    assert.equal(result, null);
+  });
+
+  it("updateAgent metadata replaces entire metadata object", () => {
+    createAgent(db, { handle: "m1", name: "M1", mission: "a", metadata: { old: true } });
+    const updated = updateAgent(db, "m1", { metadata: { new: true } });
+    assert.deepStrictEqual(updated?.metadata, { new: true });
+  });
+
+  it("handles invalid JSON metadata gracefully via safeJsonParse", () => {
+    // Insert agent with invalid JSON metadata directly via SQL
+    db.prepare("INSERT INTO agents (handle, name, mission, metadata) VALUES (?, ?, ?, ?)").run(
+      "@badjson", "Bad", "test", "not-valid-json"
+    );
+    const agent = getAgent(db, "@badjson");
+    assert.ok(agent);
+    assert.deepStrictEqual(agent.metadata, {});
+  });
+
+  it("listAgents without status filter returns all", () => {
+    createAgent(db, { handle: "x1", name: "X1", mission: "a" });
+    createAgent(db, { handle: "x2", name: "X2", mission: "b" });
+    updateAgent(db, "x2", { status: "stopped" });
+    const all = listAgents(db);
+    assert.equal(all.length, 2);
+  });
+
+  it("listAgents returns empty array when no agents exist", () => {
+    assert.deepStrictEqual(listAgents(db), []);
+  });
 });
 
 // === Foundation: Channels ===
@@ -122,6 +162,27 @@ describe("channels", () => {
     createChannel(db, { name: "b" });
     createChannel(db, { name: "c" });
     assert.equal(listChannels(db).length, 3);
+  });
+
+  it("returns null for nonexistent channel", () => {
+    assert.equal(getChannel(db, "nope"), null);
+  });
+
+  it("creates channel without description", () => {
+    const ch = createChannel(db, { name: "nodesc" });
+    assert.equal(ch.description, null);
+  });
+
+  it("lists channels in creation order", () => {
+    createChannel(db, { name: "z-last" });
+    createChannel(db, { name: "a-first" });
+    const channels = listChannels(db);
+    assert.equal(channels[0].name, "#z-last");
+    assert.equal(channels[1].name, "#a-first");
+  });
+
+  it("listChannels returns empty array when none exist", () => {
+    assert.deepStrictEqual(listChannels(db), []);
   });
 });
 
@@ -204,6 +265,90 @@ describe("posts", () => {
     assert.equal(thread.post.content, "root");
     assert.equal(thread.replies.length, 1);
   });
+
+  it("getThread returns null for nonexistent post", () => {
+    assert.equal(getThread(db, "nonexistent-id"), null);
+  });
+
+  it("getPost returns null for nonexistent post", () => {
+    assert.equal(getPost(db, "nonexistent-id"), null);
+  });
+
+  it("stores and retrieves post metadata", () => {
+    const p = createPost(db, {
+      author: "bot",
+      channel: "work",
+      content: "meta post",
+      metadata: { tags: ["urgent"], priority: 5 },
+    });
+    assert.deepStrictEqual(p.metadata, { tags: ["urgent"], priority: 5 });
+    const fetched = getPost(db, p.id);
+    assert.deepStrictEqual(fetched?.metadata, { tags: ["urgent"], priority: 5 });
+  });
+
+  it("handles invalid JSON metadata in posts gracefully", () => {
+    // Insert post with invalid JSON metadata directly
+    const id = "test-bad-json";
+    db.prepare("INSERT INTO agents (handle, name, mission) VALUES (?, ?, ?)").run("@raw", "Raw", "test");
+    db.prepare("INSERT INTO posts (id, author, channel, content, metadata) VALUES (?, ?, ?, ?, ?)").run(
+      id, "@bot", "#work", "bad json post", "{{invalid}}"
+    );
+    const post = getPost(db, id);
+    assert.ok(post);
+    assert.deepStrictEqual(post.metadata, {});
+  });
+
+  it("listPosts respects limit", () => {
+    createPost(db, { author: "bot", channel: "work", content: "a" });
+    createPost(db, { author: "bot", channel: "work", content: "b" });
+    createPost(db, { author: "bot", channel: "work", content: "c" });
+    const limited = listPosts(db, { limit: 2 });
+    assert.equal(limited.length, 2);
+  });
+
+  it("listPosts filters by since timestamp", () => {
+    const p1 = createPost(db, { author: "bot", channel: "work", content: "old" });
+    // Use the first post's timestamp as the since filter — should get at least that post
+    const posts = listPosts(db, { since: p1.created_at });
+    assert.ok(posts.length >= 1);
+    assert.ok(posts.every((p) => p.created_at >= p1.created_at));
+  });
+
+  it("listPosts filters by specific parent_id", () => {
+    const root = createPost(db, { author: "bot", channel: "work", content: "root" });
+    createPost(db, { author: "bot", channel: "work", content: "child1", parent_id: root.id });
+    createPost(db, { author: "bot", channel: "work", content: "child2", parent_id: root.id });
+    createPost(db, { author: "bot", channel: "work", content: "other" });
+
+    const children = listPosts(db, { parent_id: root.id });
+    assert.equal(children.length, 2);
+    assert.ok(children.every((p) => p.parent_id === root.id));
+  });
+
+  it("listPosts returns posts in descending time order", () => {
+    // Insert with explicit timestamps to guarantee ordering
+    db.prepare("INSERT INTO posts (id, author, channel, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+      "post-early", "@bot", "#work", "first", "{}", "2026-01-01T00:00:00Z"
+    );
+    db.prepare("INSERT INTO posts (id, author, channel, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+      "post-later", "@bot", "#work", "second", "{}", "2026-01-02T00:00:00Z"
+    );
+    const posts = listPosts(db);
+    assert.equal(posts[0].content, "second");
+    assert.equal(posts[1].content, "first");
+  });
+
+  it("getThread handles deeply nested threads", () => {
+    const p1 = createPost(db, { author: "bot", channel: "work", content: "level0" });
+    const p2 = createPost(db, { author: "bot", channel: "work", content: "level1", parent_id: p1.id });
+    const p3 = createPost(db, { author: "bot", channel: "work", content: "level2", parent_id: p2.id });
+    createPost(db, { author: "bot", channel: "work", content: "level3", parent_id: p3.id });
+
+    const thread = getThread(db, p3.id)!;
+    // Should find the root
+    assert.equal(thread.post.content, "level0");
+    assert.equal(thread.replies[0].replies[0].replies[0].post.content, "level3");
+  });
 });
 
 // === Foundation: Commits ===
@@ -242,6 +387,31 @@ describe("commits", () => {
 
   it("rejects commit for missing post", () => {
     assert.throws(() => linkCommit(db, { hash: "xxx", post_id: "fake-id" }), /not found/);
+  });
+
+  it("getCommit returns null for nonexistent hash", () => {
+    assert.equal(getCommit(db, "nonexistent"), null);
+  });
+
+  it("linkCommit without files defaults to empty array", () => {
+    const post = createPost(db, { author: "bot", channel: "work", content: "no files" });
+    const commit = linkCommit(db, { hash: "nofiles", post_id: post.id });
+    assert.deepStrictEqual(commit.files, []);
+  });
+
+  it("handles invalid JSON in files column gracefully", () => {
+    const post = createPost(db, { author: "bot", channel: "work", content: "bad files" });
+    db.prepare("INSERT INTO commits (hash, post_id, files) VALUES (?, ?, ?)").run(
+      "badjson", post.id, "not-valid-json"
+    );
+    const commit = getCommit(db, "badjson");
+    assert.ok(commit);
+    assert.deepStrictEqual(commit.files, []);
+  });
+
+  it("listCommitsByPost returns empty array when no commits", () => {
+    const post = createPost(db, { author: "bot", channel: "work", content: "no commits" });
+    assert.deepStrictEqual(listCommitsByPost(db, post.id), []);
   });
 });
 
@@ -290,6 +460,32 @@ describe("auth", () => {
     assert.equal(h1, h2);
     assert.equal(h1.length, 64); // SHA-256 hex
   });
+
+  it("revoking a nonexistent key is a no-op", () => {
+    // Should not throw
+    revokeKey(db, "nonexistent-key");
+  });
+
+  it("revoking an already-revoked key is idempotent", () => {
+    const rawKey = generateKey();
+    storeKey(db, rawKey, null);
+    revokeKey(db, rawKey);
+    // Revoking again should not throw
+    revokeKey(db, rawKey);
+    assert.equal(validateKey(db, rawKey), null);
+  });
+
+  it("different keys produce different hashes", () => {
+    const h1 = hashKey("key-one");
+    const h2 = hashKey("key-two");
+    assert.notEqual(h1, h2);
+  });
+
+  it("generates unique keys each time", () => {
+    const k1 = generateKey();
+    const k2 = generateKey();
+    assert.notEqual(k1, k2);
+  });
 });
 
 // === Rate limiting ===
@@ -326,6 +522,34 @@ describe("rate limiting", () => {
     const result = checkRateLimit("@bot", "commits", config);
     assert.ok(result.allowed);
   });
+
+  it("resetRateLimits clears all counters", () => {
+    const config = { postsPerHour: 1, commitsPerHour: 1 };
+    checkRateLimit("@bot", "posts", config);
+    // Now at limit
+    assert.ok(!checkRateLimit("@bot", "posts", config).allowed);
+    resetRateLimits();
+    // After reset, should be allowed again
+    assert.ok(checkRateLimit("@bot", "posts", config).allowed);
+  });
+
+  it("uses commitsPerHour for commit limit type", () => {
+    const config = { postsPerHour: 100, commitsPerHour: 2 };
+    checkRateLimit("@bot", "commits", config);
+    checkRateLimit("@bot", "commits", config);
+    const result = checkRateLimit("@bot", "commits", config);
+    assert.ok(!result.allowed);
+  });
+
+  it("retryAfterMs is positive when rate limited", () => {
+    const config = { postsPerHour: 1, commitsPerHour: 1 };
+    checkRateLimit("@bot", "posts", config);
+    const result = checkRateLimit("@bot", "posts", config);
+    assert.ok(!result.allowed);
+    assert.ok(result.retryAfterMs > 0);
+    // retryAfterMs should be at most 1 hour
+    assert.ok(result.retryAfterMs <= 60 * 60 * 1000);
+  });
 });
 
 // === Supervision: Channel Priority ===
@@ -358,6 +582,21 @@ describe("channel priority", () => {
   it("normalizes channel name", () => {
     setChannelPriority(db, "work", 25);
     assert.equal(getChannelPriority(db, "work"), 25);
+  });
+
+  it("listChannelPriorities returns all priorities sorted desc", () => {
+    setChannelPriority(db, "#work", 10);
+    setChannelPriority(db, "#escalations", 100);
+    const priorities = listChannelPriorities(db);
+    assert.equal(priorities.length, 2);
+    assert.equal(priorities[0].channel_name, "#escalations");
+    assert.equal(priorities[0].priority, 100);
+    assert.equal(priorities[1].channel_name, "#work");
+    assert.equal(priorities[1].priority, 10);
+  });
+
+  it("listChannelPriorities returns empty when none set", () => {
+    assert.deepStrictEqual(listChannelPriorities(db), []);
   });
 });
 
@@ -419,6 +658,34 @@ describe("feed", () => {
     const feed = getFeed(db, { limit: 2 });
     assert.equal(feed.length, 2);
   });
+
+  it("filters by since timestamp", () => {
+    const p1 = createPost(db, { author: "bot", channel: "work", content: "old" });
+    const feed = getFeed(db, { since: p1.created_at });
+    assert.ok(feed.length >= 1);
+    assert.ok(feed.every((p) => p.created_at >= p1.created_at));
+  });
+
+  it("returns empty feed when no posts exist", () => {
+    const feed = getFeed(db);
+    assert.deepStrictEqual(feed, []);
+  });
+
+  it("feed posts have priority field", () => {
+    createPost(db, { author: "bot", channel: "work", content: "test" });
+    const feed = getFeed(db);
+    assert.equal(feed.length, 1);
+    assert.equal(typeof feed[0].priority, "number");
+  });
+
+  it("channels without priority default to 0 in feed", () => {
+    createChannel(db, { name: "nopri" });
+    createPost(db, { author: "bot", channel: "nopri", content: "test" });
+    const feed = getFeed(db);
+    const nopriPost = feed.find((p) => p.channel === "#nopri");
+    assert.ok(nopriPost);
+    assert.equal(nopriPost.priority, 0);
+  });
 });
 
 // === Supervision: Briefing ===
@@ -465,6 +732,25 @@ describe("briefing", () => {
   });
 });
 
+// === Supervision: Cursors ===
+
+describe("cursors", () => {
+  it("getCursor returns null when cursor does not exist", () => {
+    assert.equal(getCursor(db, "nonexistent"), null);
+  });
+
+  it("setCursor and getCursor round-trip", () => {
+    setCursor(db, "test_cursor", "2026-01-01T00:00:00Z");
+    assert.equal(getCursor(db, "test_cursor"), "2026-01-01T00:00:00Z");
+  });
+
+  it("setCursor updates existing cursor", () => {
+    setCursor(db, "test_cursor", "2026-01-01T00:00:00Z");
+    setCursor(db, "test_cursor", "2026-02-01T00:00:00Z");
+    assert.equal(getCursor(db, "test_cursor"), "2026-02-01T00:00:00Z");
+  });
+});
+
 // === Supervision: Duration parsing ===
 
 describe("parseDuration", () => {
@@ -502,6 +788,20 @@ describe("parseDuration", () => {
   });
 });
 
+// === DB utility ===
+
+describe("dbExists", () => {
+  it("returns true when DB file exists", () => {
+    assert.ok(dbExists(tmpDir));
+  });
+
+  it("returns false for directory with no DB", () => {
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-empty-"));
+    assert.ok(!dbExists(emptyDir));
+    fs.rmSync(emptyDir, { recursive: true, force: true });
+  });
+});
+
 // === Schema: Foundation/Supervision separation ===
 
 describe("schema separation", () => {
@@ -524,6 +824,14 @@ describe("schema separation", () => {
     const names = tables.map((t) => t.name);
     assert.ok(names.includes("channel_priority"));
     assert.ok(names.includes("cursors"));
+  });
+
+  it("spawns table exists", () => {
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    ).all() as { name: string }[];
+    const names = tables.map((t) => t.name);
+    assert.ok(names.includes("spawns"));
   });
 
   it("foundation works without supervision data", () => {
