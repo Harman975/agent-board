@@ -12,6 +12,9 @@ import {
   renderThread,
   renderBriefing,
   renderChannelList,
+  renderSpawnList,
+  renderStatus,
+  type SpawnInfo,
 } from "./render.js";
 import type { Agent, Post, RankedPost } from "./types.js";
 import type { BriefingSummary } from "./supervision.js";
@@ -64,11 +67,20 @@ async function api<T>(
     "Content-Type": "application/json",
   };
 
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (err: any) {
+    if (err.cause?.code === "ECONNREFUSED" || err.message?.includes("fetch failed")) {
+      console.error(`Cannot connect to server at ${rc.url}. Is \`board serve\` running?`);
+      process.exit(1);
+    }
+    throw err;
+  }
 
   const data = (await res.json()) as T;
   return { ok: res.ok, status: res.status, data };
@@ -457,6 +469,201 @@ program
       process.exit(1);
     }
     console.log(`Linked commit ${hash.slice(0, 8)} to post ${postId.slice(0, 8)}`);
+  });
+
+// --- board spawn ---
+program
+  .command("spawn <handle>")
+  .description("Create an agent and launch a Claude Code subprocess")
+  .requiredOption("--mission <mission>", "Agent mission / task description")
+  .option("--name <name>", "Agent display name")
+  .action(async (handle: string, opts: { mission: string; name?: string }) => {
+    const rc = requireRC();
+
+    // Create agent via API
+    const res = await api<Agent & { api_key: string }>(rc, "POST", "/api/agents", {
+      handle,
+      name: opts.name,
+      mission: opts.mission,
+    });
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+
+    const { spawnAgent } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+
+    try {
+      const result = spawnAgent(db, {
+        handle: res.data.handle,
+        mission: opts.mission,
+        apiKey: res.data.api_key,
+        serverUrl: rc.url,
+        projectDir: process.cwd(),
+      });
+      console.log(`Spawned ${res.data.handle} (PID ${result.pid})`);
+      console.log(`  Branch:   ${result.branch}`);
+      console.log(`  Worktree: ${result.worktreePath}`);
+      console.log(`  Logs:     ${result.worktreePath}/agent.log`);
+    } catch (err: any) {
+      console.error(`Spawn failed: ${err.message}`);
+      process.exit(1);
+    } finally {
+      db.close();
+    }
+  });
+
+// --- board kill ---
+program
+  .command("kill <handle>")
+  .description("Kill a spawned agent's subprocess")
+  .action(async (handle: string) => {
+    const { killAgent } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+    const h = handle.startsWith("@") ? handle : `@${handle}`;
+
+    try {
+      killAgent(db, h, process.cwd());
+      console.log(`Killed ${h}`);
+    } catch (err: any) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    } finally {
+      db.close();
+    }
+  });
+
+// --- board ps ---
+program
+  .command("ps")
+  .description("List spawned agent processes")
+  .option("--all", "Show stopped agents too")
+  .action(async (opts: { all?: boolean }) => {
+    const { listSpawns, isProcessAlive } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+
+    const spawns = listSpawns(db, !opts.all);
+    const infos: SpawnInfo[] = spawns.map((s) => ({
+      agent_handle: s.agent_handle,
+      pid: s.pid,
+      started_at: s.started_at,
+      stopped_at: s.stopped_at,
+      alive: s.stopped_at ? false : isProcessAlive(s.pid),
+    }));
+
+    console.log(renderSpawnList(infos));
+    db.close();
+  });
+
+// --- board watch ---
+program
+  .command("watch")
+  .description("Live-updating feed (polls every 5s)")
+  .option("--interval <seconds>", "Poll interval in seconds", "5")
+  .action(async (opts: { interval: string }) => {
+    const rc = requireRC();
+    const interval = parseInt(opts.interval, 10) * 1000;
+
+    const poll = async () => {
+      try {
+        const res = await api<RankedPost[]>(rc, "GET", "/api/feed?limit=20");
+        if (res.ok) {
+          // Clear screen and move cursor to top
+          process.stdout.write("\x1b[2J\x1b[H");
+          const now = new Date().toLocaleTimeString();
+          console.log(`\x1b[1mAgentBoard Feed\x1b[0m  \x1b[90m${now}  (Ctrl+C to exit)\x1b[0m\n`);
+          console.log(renderFeed(res.data));
+        }
+      } catch {
+        process.stdout.write("\x1b[2J\x1b[H");
+        console.log("\x1b[33mConnection lost, retrying...\x1b[0m");
+      }
+    };
+
+    await poll();
+    setInterval(poll, interval);
+  });
+
+// --- board status ---
+program
+  .command("status")
+  .description("Show system overview")
+  .action(async () => {
+    const rc = requireRC();
+
+    const [agentsRes, channelsRes, feedRes] = await Promise.all([
+      api<Agent[]>(rc, "GET", "/api/agents"),
+      api<{ name: string; description: string | null; priority: number }[]>(rc, "GET", "/api/channels"),
+      api<RankedPost[]>(rc, "GET", "/api/feed?limit=0"),
+    ]);
+
+    // Get spawn info from local DB
+    const { listSpawns, isProcessAlive } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+    const spawns = listSpawns(db);
+    db.close();
+
+    const agents = agentsRes.ok ? agentsRes.data : [];
+    const channels = channelsRes.ok ? channelsRes.data : [];
+
+    const spawnInfos: SpawnInfo[] = spawns.map((s) => ({
+      agent_handle: s.agent_handle,
+      pid: s.pid,
+      started_at: s.started_at,
+      stopped_at: s.stopped_at,
+      alive: s.stopped_at ? false : isProcessAlive(s.pid),
+    }));
+
+    // Count posts via feed endpoint (total)
+    const postsRes = await api<Post[]>(rc, "GET", "/api/posts?limit=0");
+    const postCount = postsRes.ok ? postsRes.data.length : 0;
+
+    console.log(renderStatus({
+      agents: {
+        total: agents.length,
+        active: agents.filter((a) => a.status === "active").length,
+        blocked: agents.filter((a) => a.status === "blocked").length,
+        stopped: agents.filter((a) => a.status === "stopped").length,
+      },
+      posts: postCount,
+      channels: channels.map((ch) => ({ name: ch.name, priority: ch.priority })),
+      spawns: spawnInfos,
+    }));
+  });
+
+// --- board logs ---
+program
+  .command("logs <handle>")
+  .description("Tail an agent's log file")
+  .option("--lines <n>", "Number of lines to show", "50")
+  .action(async (handle: string, opts: { lines: string }) => {
+    const { getSpawn } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+    const h = handle.startsWith("@") ? handle : `@${handle}`;
+
+    const spawn = getSpawn(db, h);
+    db.close();
+
+    if (!spawn) {
+      console.error(`No spawn record for ${h}`);
+      process.exit(1);
+    }
+    if (!spawn.log_path || !fs.existsSync(spawn.log_path)) {
+      console.error(`Log file not found: ${spawn.log_path}`);
+      process.exit(1);
+    }
+
+    const lines = parseInt(opts.lines, 10);
+    const content = fs.readFileSync(spawn.log_path, "utf-8");
+    const allLines = content.split("\n");
+    const tail = allLines.slice(-lines).join("\n");
+    console.log(tail);
   });
 
 program.parse();

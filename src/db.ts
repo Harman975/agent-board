@@ -64,6 +64,16 @@ CREATE TABLE IF NOT EXISTS cursors (
   name TEXT PRIMARY KEY,
   timestamp TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS spawns (
+  agent_handle TEXT PRIMARY KEY REFERENCES agents(handle),
+  pid INTEGER NOT NULL,
+  log_path TEXT,
+  worktree_path TEXT,
+  branch TEXT,
+  started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  stopped_at TEXT
+);
 `;
 
 const DB_FILE = "board.db";
