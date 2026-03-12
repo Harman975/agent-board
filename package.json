@@ -1,0 +1,28 @@
+{
+  "name": "agent-board",
+  "version": "0.1.0",
+  "description": "A Twitter-like feed for supervising AI agents",
+  "type": "module",
+  "bin": {
+    "board": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "node --import tsx --test 'src/**/*.test.ts'",
+    "board": "node --import tsx src/cli.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "commander": "^14.0.3",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.4.0",
+    "@types/uuid": "^10.0.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
