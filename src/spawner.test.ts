@@ -335,6 +335,208 @@ describe("killAgent", () => {
   });
 });
 
+// === getSpawn edge cases ===
+
+describe("getSpawn edge cases", () => {
+  it("returns null for nonexistent handle", () => {
+    assert.equal(getSpawn(db, "@nonexistent"), null);
+  });
+
+  it("normalizes handle before lookup", () => {
+    createAgent(db, { handle: "findme", name: "FindMe", mission: "test" });
+    insertSpawn(db, { agent_handle: "@findme", pid: 111, log_path: null, worktree_path: null, branch: null });
+    // Look up without @
+    const spawn = getSpawn(db, "findme");
+    assert.ok(spawn);
+    assert.equal(spawn.agent_handle, "@findme");
+  });
+});
+
+// === markSpawnStopped edge cases ===
+
+describe("markSpawnStopped edge cases", () => {
+  it("normalizes handle", () => {
+    createAgent(db, { handle: "norm", name: "Norm", mission: "test" });
+    insertSpawn(db, { agent_handle: "@norm", pid: 111, log_path: null, worktree_path: null, branch: null });
+    // Call without @
+    markSpawnStopped(db, "norm");
+    const spawn = getSpawn(db, "@norm");
+    assert.ok(spawn?.stopped_at);
+  });
+
+  it("is a no-op for already-stopped spawns", () => {
+    createAgent(db, { handle: "done", name: "Done", mission: "test" });
+    insertSpawn(db, { agent_handle: "@done", pid: 111, log_path: null, worktree_path: null, branch: null });
+    markSpawnStopped(db, "@done");
+    const first = getSpawn(db, "@done")!;
+    // Mark again — should not throw
+    markSpawnStopped(db, "@done");
+    const second = getSpawn(db, "@done")!;
+    assert.equal(first.stopped_at, second.stopped_at);
+  });
+});
+
+// === listSpawns edge cases ===
+
+describe("listSpawns edge cases", () => {
+  it("returns empty array when no spawns", () => {
+    assert.deepStrictEqual(listSpawns(db, true), []);
+    assert.deepStrictEqual(listSpawns(db, false), []);
+  });
+
+  it("default activeOnly=false returns all", () => {
+    createAgent(db, { handle: "s1", name: "S1", mission: "test" });
+    createAgent(db, { handle: "s2", name: "S2", mission: "test" });
+    insertSpawn(db, { agent_handle: "@s1", pid: 111, log_path: null, worktree_path: null, branch: null });
+    insertSpawn(db, { agent_handle: "@s2", pid: 222, log_path: null, worktree_path: null, branch: null });
+    markSpawnStopped(db, "@s1");
+
+    const all = listSpawns(db);
+    assert.equal(all.length, 2);
+  });
+
+  it("spawns ordered by started_at DESC", () => {
+    createAgent(db, { handle: "first", name: "First", mission: "test" });
+    createAgent(db, { handle: "second", name: "Second", mission: "test" });
+    // Insert with explicit timestamps to guarantee ordering
+    db.prepare("INSERT INTO spawns (agent_handle, pid, started_at) VALUES (?, ?, ?)").run(
+      "@first", 111, "2026-01-01T00:00:00Z"
+    );
+    db.prepare("INSERT INTO spawns (agent_handle, pid, started_at) VALUES (?, ?, ?)").run(
+      "@second", 222, "2026-01-02T00:00:00Z"
+    );
+
+    const all = listSpawns(db, false);
+    // Most recent first
+    assert.equal(all[0].agent_handle, "@second");
+    assert.equal(all[1].agent_handle, "@first");
+  });
+});
+
+// === ensureWorkChannels ===
+
+describe("spawnAgent channel creation", () => {
+  it("creates #work, #escalations, and #status channels", () => {
+    createAgent(db, { handle: "chantest", name: "ChanTest", mission: "test" });
+    assert.equal(getChannel(db, "#work"), null);
+    assert.equal(getChannel(db, "#escalations"), null);
+    assert.equal(getChannel(db, "#status"), null);
+
+    const mock = createMockExecutor();
+    spawnAgent(db, {
+      handle: "@chantest",
+      mission: "test",
+      apiKey: "key",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+    }, mock.executor);
+
+    assert.ok(getChannel(db, "#work"));
+    assert.ok(getChannel(db, "#escalations"));
+    assert.ok(getChannel(db, "#status"));
+  });
+
+  it("does not fail if channels already exist", () => {
+    createAgent(db, { handle: "chantest2", name: "ChanTest2", mission: "test" });
+    createChannel(db, { name: "work" });
+    createChannel(db, { name: "escalations" });
+    createChannel(db, { name: "status" });
+
+    const mock = createMockExecutor();
+    // Should not throw
+    spawnAgent(db, {
+      handle: "@chantest2",
+      mission: "test",
+      apiKey: "key",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+    }, mock.executor);
+  });
+});
+
+// === spawnAgent foreground mode ===
+
+describe("spawnAgent foreground mode", () => {
+  it("returns child process in foreground mode", () => {
+    createAgent(db, { handle: "fg", name: "FG", mission: "foreground test" });
+    const mock = createMockExecutor();
+    const result = spawnAgent(db, {
+      handle: "@fg",
+      mission: "foreground test",
+      apiKey: "key",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+      foreground: true,
+    }, mock.executor);
+
+    assert.ok(result.child); // foreground returns child
+    assert.equal(mock._lastCall?.opts.stdio, "inherit");
+    assert.equal(mock._lastCall?.opts.detached, false);
+  });
+
+  it("does not create log file in foreground mode", () => {
+    createAgent(db, { handle: "fgnolog", name: "FGNoLog", mission: "no log" });
+    const mock = createMockExecutor();
+    const result = spawnAgent(db, {
+      handle: "@fgnolog",
+      mission: "no log",
+      apiKey: "key",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+      foreground: true,
+    }, mock.executor);
+
+    const spawn = getSpawn(db, "@fgnolog");
+    assert.equal(spawn?.log_path, null);
+  });
+});
+
+// === spawnAgent reuses existing worktree ===
+
+describe("spawnAgent worktree reuse", () => {
+  it("reuses existing worktree if already present", () => {
+    createAgent(db, { handle: "reuse", name: "Reuse", mission: "test" });
+    const mock = createMockExecutor();
+
+    // First spawn creates the worktree
+    const result1 = spawnAgent(db, {
+      handle: "@reuse",
+      mission: "test",
+      apiKey: "key",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+    }, mock.executor);
+
+    // Remove the spawn record so we can spawn again
+    db.prepare("DELETE FROM spawns WHERE agent_handle = '@reuse'").run();
+
+    // Second spawn should reuse the worktree
+    const result2 = spawnAgent(db, {
+      handle: "@reuse",
+      mission: "test again",
+      apiKey: "key",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+    }, mock.executor);
+
+    assert.equal(result1.worktreePath, result2.worktreePath);
+  });
+});
+
+// === killAgent edge cases ===
+
+describe("killAgent edge cases", () => {
+  it("normalizes handle without @", () => {
+    createAgent(db, { handle: "killnorm", name: "KillNorm", mission: "test" });
+    insertSpawn(db, { agent_handle: "@killnorm", pid: 999999, log_path: null, worktree_path: null, branch: null });
+
+    // Should not throw — PID doesn't exist, so marks stopped
+    killAgent(db, "killnorm", tmpDir);
+    const spawn = getSpawn(db, "@killnorm");
+    assert.ok(spawn?.stopped_at);
+  });
+});
+
 // === PID checks ===
 
 describe("isProcessAlive", () => {

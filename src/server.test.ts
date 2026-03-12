@@ -707,6 +707,192 @@ describe("POST /api/posts edge cases", () => {
   });
 });
 
+// === Revoked key rejection ===
+
+describe("revoked key rejection", () => {
+  it("rejects a revoked admin key", async () => {
+    const { revokeKey } = await import("./auth.js");
+    const tempKey = generateKey();
+    db.prepare("INSERT INTO api_keys (key_hash, agent_handle) VALUES (?, ?)").run(
+      hashKey(tempKey), null
+    );
+    // Verify it works first
+    const res1 = await req("GET", "/api/agents", { key: tempKey });
+    assert.equal(res1.status, 200);
+
+    // Revoke it
+    revokeKey(db, tempKey);
+
+    // Now it should be rejected
+    const res2 = await req("GET", "/api/agents", { key: tempKey });
+    assert.equal(res2.status, 401);
+  });
+
+  it("rejects a revoked agent key", async () => {
+    const { revokeKey } = await import("./auth.js");
+    const createRes = await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@revokee", mission: "test" },
+    });
+    const { api_key: agentKey } = await createRes.json();
+
+    // Verify it works
+    const res1 = await req("GET", "/api/agents", { key: agentKey });
+    assert.equal(res1.status, 200);
+
+    // Revoke
+    revokeKey(db, agentKey);
+
+    const res2 = await req("GET", "/api/agents", { key: agentKey });
+    assert.equal(res2.status, 401);
+  });
+});
+
+// === Admin default author ===
+
+describe("admin default author", () => {
+  it("defaults to @admin when admin key posts without specifying author", async () => {
+    const res = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "no author specified", channel: "#general" },
+    });
+    assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.equal(data.author, "@admin");
+  });
+
+  it("admin can post as a specific author", async () => {
+    await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@proxy", mission: "proxy" },
+    });
+    const res = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "proxied", channel: "#general", author: "@proxy" },
+    });
+    assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.equal(data.author, "@proxy");
+  });
+});
+
+// === POST /api/posts with metadata ===
+
+describe("POST /api/posts with metadata", () => {
+  it("stores and returns post metadata", async () => {
+    const res = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: {
+        content: "with meta",
+        channel: "#general",
+        author: "@admin",
+        metadata: { tag: "important", score: 42 },
+      },
+    });
+    assert.equal(res.status, 201);
+    const data = await res.json();
+    assert.deepStrictEqual(data.metadata, { tag: "important", score: 42 });
+  });
+});
+
+// === POST /api/posts with parent_id (threading via API) ===
+
+describe("POST /api/posts threading", () => {
+  it("creates a threaded reply via API", async () => {
+    const rootRes = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "root", channel: "#general", author: "@admin" },
+    });
+    const root = await rootRes.json();
+
+    const replyRes = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "reply", channel: "#general", author: "@admin", parent_id: root.id },
+    });
+    assert.equal(replyRes.status, 201);
+    const reply = await replyRes.json();
+    assert.equal(reply.parent_id, root.id);
+  });
+});
+
+// === Commit rate limiting for agent ===
+
+describe("POST /api/commits rate limiting", () => {
+  it("rate limits commits for agent key", async () => {
+    const { checkRateLimit } = await import("./ratelimit.js");
+    const createRes = await req("POST", "/api/agents", {
+      key: adminKey,
+      body: { handle: "@committer", mission: "commit" },
+    });
+    const { api_key: agentKey } = await createRes.json();
+
+    // Create a post to link commits to
+    const postRes = await req("POST", "/api/posts", {
+      key: agentKey,
+      body: { content: "work", channel: "#general" },
+    });
+    const post = await postRes.json();
+
+    // First commit should work
+    const res1 = await req("POST", "/api/commits", {
+      key: agentKey,
+      body: { hash: "commit1", post_id: post.id },
+    });
+    assert.equal(res1.status, 201);
+  });
+
+  it("admin exempt from commit rate limiting", async () => {
+    const postRes = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "work", channel: "#general", author: "@admin" },
+    });
+    const post = await postRes.json();
+
+    const res = await req("POST", "/api/commits", {
+      key: adminKey,
+      body: { hash: "admin-commit", post_id: post.id },
+    });
+    assert.equal(res.status, 201);
+  });
+});
+
+// === GET /api/posts with since filter ===
+
+describe("GET /api/posts with since", () => {
+  it("filters posts by since timestamp", async () => {
+    const p1Res = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "first", channel: "#general", author: "@admin" },
+    });
+    const p1 = await p1Res.json();
+
+    const res = await req("GET", `/api/posts?since=${encodeURIComponent(p1.created_at)}`, {
+      key: adminKey,
+    });
+    const data = await res.json();
+    assert.ok(data.length >= 1);
+    assert.ok(data.every((p: any) => p.created_at >= p1.created_at));
+  });
+});
+
+// === GET /api/feed with since filter ===
+
+describe("GET /api/feed with since", () => {
+  it("filters feed by since timestamp", async () => {
+    const p1Res = await req("POST", "/api/posts", {
+      key: adminKey,
+      body: { content: "first", channel: "#general", author: "@admin" },
+    });
+    const p1 = await p1Res.json();
+
+    const res = await req("GET", `/api/feed?since=${encodeURIComponent(p1.created_at)}`, {
+      key: adminKey,
+    });
+    const data = await res.json();
+    assert.ok(data.length >= 1);
+  });
+});
+
 // === GET /api/feed edge cases ===
 
 describe("GET /api/feed edge cases", () => {

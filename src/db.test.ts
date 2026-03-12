@@ -788,6 +788,221 @@ describe("parseDuration", () => {
   });
 });
 
+// === Thread cycle protection ===
+
+describe("thread cycle protection", () => {
+  beforeEach(() => setupPostFixtures());
+
+  it("getThread handles self-referencing parent_id", () => {
+    const post = createPost(db, { author: "bot", channel: "work", content: "loop" });
+    // Manually create a cycle: post points to itself as parent
+    db.prepare("UPDATE posts SET parent_id = ? WHERE id = ?").run(post.id, post.id);
+
+    const thread = getThread(db, post.id);
+    assert.ok(thread);
+    // Should not infinite loop — cycle protection breaks the chain
+    assert.equal(thread.post.content, "loop");
+  });
+
+  it("getThread handles two-node cycle in parent chain", () => {
+    const p1 = createPost(db, { author: "bot", channel: "work", content: "a" });
+    const p2 = createPost(db, { author: "bot", channel: "work", content: "b", parent_id: p1.id });
+    // Create cycle: p1 -> p2 -> p1
+    db.prepare("UPDATE posts SET parent_id = ? WHERE id = ?").run(p2.id, p1.id);
+
+    const thread = getThread(db, p2.id);
+    assert.ok(thread);
+    // Should terminate without infinite loop
+  });
+
+  it("buildThread avoids revisiting already-visited nodes", () => {
+    const root = createPost(db, { author: "bot", channel: "work", content: "root" });
+    const child = createPost(db, { author: "bot", channel: "work", content: "child", parent_id: root.id });
+    // Make child also point back to root as a reply (simulated cycle in replies)
+    db.prepare("INSERT INTO posts (id, author, channel, content, parent_id, metadata) VALUES (?, ?, ?, ?, ?, ?)").run(
+      "cycle-reply", "@bot", "#work", "cycle", root.id, "{}"
+    );
+    // Now set cycle-reply's parent_id to child to create a deeper structure
+    db.prepare("UPDATE posts SET parent_id = ? WHERE id = ?").run(child.id, "cycle-reply");
+
+    const thread = getThread(db, root.id);
+    assert.ok(thread);
+    assert.equal(thread.post.content, "root");
+  });
+});
+
+// === Combined filters ===
+
+describe("combined filters", () => {
+  beforeEach(() => {
+    setupPostFixtures();
+    createAgent(db, { handle: "other", name: "Other", mission: "x" });
+    createChannel(db, { name: "general" });
+  });
+
+  it("listPosts filters by author + channel simultaneously", () => {
+    createPost(db, { author: "bot", channel: "work", content: "bot-work" });
+    createPost(db, { author: "bot", channel: "general", content: "bot-general" });
+    createPost(db, { author: "other", channel: "work", content: "other-work" });
+
+    const posts = listPosts(db, { author: "bot", channel: "work" });
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].content, "bot-work");
+  });
+
+  it("listPosts filters by author + channel + limit", () => {
+    createPost(db, { author: "bot", channel: "work", content: "a" });
+    createPost(db, { author: "bot", channel: "work", content: "b" });
+    createPost(db, { author: "bot", channel: "work", content: "c" });
+
+    const posts = listPosts(db, { author: "bot", channel: "work", limit: 2 });
+    assert.equal(posts.length, 2);
+  });
+
+  it("getFeed filters by channel + author simultaneously", () => {
+    setChannelPriority(db, "#work", 10);
+    createPost(db, { author: "bot", channel: "work", content: "bot-work" });
+    createPost(db, { author: "other", channel: "work", content: "other-work" });
+    createPost(db, { author: "bot", channel: "general", content: "bot-general" });
+
+    const feed = getFeed(db, { channel: "work", author: "bot" });
+    assert.equal(feed.length, 1);
+    assert.equal(feed[0].content, "bot-work");
+  });
+
+  it("getFeed filters by channel + since + limit", () => {
+    setChannelPriority(db, "#work", 10);
+    const p1 = createPost(db, { author: "bot", channel: "work", content: "a" });
+    createPost(db, { author: "bot", channel: "work", content: "b" });
+    createPost(db, { author: "bot", channel: "work", content: "c" });
+
+    const feed = getFeed(db, { channel: "work", since: p1.created_at, limit: 2 });
+    assert.equal(feed.length, 2);
+  });
+});
+
+// === parseDuration edge cases ===
+
+describe("parseDuration edge cases", () => {
+  it("returns timestamp for 0m (zero minutes)", () => {
+    const ts = parseDuration("0m");
+    assert.ok(ts);
+    const diff = Date.now() - new Date(ts).getTime();
+    // Should be approximately now (within 5s)
+    assert.ok(diff >= 0 && diff <= 5000);
+  });
+
+  it("returns timestamp for 0h (zero hours)", () => {
+    const ts = parseDuration("0h");
+    assert.ok(ts);
+    const diff = Date.now() - new Date(ts).getTime();
+    assert.ok(diff >= 0 && diff <= 5000);
+  });
+
+  it("returns null for negative-like durations", () => {
+    assert.equal(parseDuration("-5m"), null);
+  });
+
+  it("returns null for decimal durations", () => {
+    assert.equal(parseDuration("1.5h"), null);
+  });
+
+  it("returns null for just a unit", () => {
+    assert.equal(parseDuration("m"), null);
+    assert.equal(parseDuration("h"), null);
+    assert.equal(parseDuration("d"), null);
+  });
+
+  it("returns null for just a number", () => {
+    assert.equal(parseDuration("30"), null);
+  });
+
+  it("handles large values", () => {
+    const ts = parseDuration("365d");
+    assert.ok(ts);
+    const diff = Date.now() - new Date(ts).getTime();
+    // ~365 days
+    assert.ok(diff >= 364 * 24 * 60 * 60 * 1000);
+  });
+});
+
+// === Briefing grouping ===
+
+describe("briefing grouping", () => {
+  beforeEach(() => {
+    setupPostFixtures();
+    createChannel(db, { name: "escalations" });
+    createChannel(db, { name: "alerts" });
+    setChannelPriority(db, "#escalations", 100);
+    setChannelPriority(db, "#alerts", 50);
+  });
+
+  it("groups posts by channel sorted by priority", () => {
+    createPost(db, { author: "bot", channel: "work", content: "w1" });
+    createPost(db, { author: "bot", channel: "escalations", content: "e1" });
+    createPost(db, { author: "bot", channel: "alerts", content: "a1" });
+    createPost(db, { author: "bot", channel: "work", content: "w2" });
+
+    const briefing = getBriefing(db);
+    assert.equal(briefing.total, 4);
+    assert.equal(briefing.channels.length, 3);
+    // Channels sorted by priority desc
+    assert.equal(briefing.channels[0].name, "#escalations");
+    assert.equal(briefing.channels[0].count, 1);
+    assert.equal(briefing.channels[1].name, "#alerts");
+    assert.equal(briefing.channels[1].count, 1);
+    assert.equal(briefing.channels[2].name, "#work");
+    assert.equal(briefing.channels[2].count, 2);
+  });
+
+  it("briefing excludes replies", () => {
+    const root = createPost(db, { author: "bot", channel: "work", content: "root" });
+    createPost(db, { author: "bot", channel: "work", content: "reply", parent_id: root.id });
+
+    const briefing = getBriefing(db);
+    assert.equal(briefing.total, 1);
+  });
+
+  it("briefing returns empty when no posts", () => {
+    const briefing = getBriefing(db);
+    assert.equal(briefing.total, 0);
+    assert.deepStrictEqual(briefing.channels, []);
+  });
+});
+
+// === Agent update single fields ===
+
+describe("agent update single fields", () => {
+  beforeEach(() => {
+    createAgent(db, { handle: "x", name: "X", mission: "original", metadata: { key: "val" } });
+  });
+
+  it("updates only name", () => {
+    const updated = updateAgent(db, "x", { name: "NewName" });
+    assert.equal(updated?.name, "NewName");
+    assert.equal(updated?.mission, "original");
+    assert.equal(updated?.status, "active");
+  });
+
+  it("updates only status", () => {
+    const updated = updateAgent(db, "x", { status: "idle" });
+    assert.equal(updated?.status, "idle");
+    assert.equal(updated?.name, "X");
+  });
+
+  it("updates only mission", () => {
+    const updated = updateAgent(db, "x", { mission: "new mission" });
+    assert.equal(updated?.mission, "new mission");
+    assert.equal(updated?.name, "X");
+  });
+
+  it("updates only metadata", () => {
+    const updated = updateAgent(db, "x", { metadata: { replaced: true } });
+    assert.deepStrictEqual(updated?.metadata, { replaced: true });
+    assert.equal(updated?.name, "X");
+  });
+});
+
 // === DB utility ===
 
 describe("dbExists", () => {
