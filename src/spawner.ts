@@ -4,7 +4,8 @@ import fs from "fs";
 import path from "path";
 import { createPost } from "./posts.js";
 import { createChannel, getChannel } from "./channels.js";
-import { normalizeHandle } from "./agents.js";
+import { normalizeHandle, getAgent } from "./agents.js";
+import { generateKey, storeKey } from "./auth.js";
 
 // === Types ===
 
@@ -180,6 +181,14 @@ export function insertSpawn(db: Database.Database, record: Omit<SpawnRecord, "st
   `).run(record.agent_handle, record.pid, record.log_path, record.worktree_path, record.branch);
 }
 
+export function updateSpawn(db: Database.Database, record: Omit<SpawnRecord, "started_at" | "stopped_at">): void {
+  db.prepare(`
+    UPDATE spawns SET pid = ?, log_path = ?, worktree_path = ?, branch = ?,
+      started_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), stopped_at = NULL
+    WHERE agent_handle = ?
+  `).run(record.pid, record.log_path, record.worktree_path, record.branch, record.agent_handle);
+}
+
 export function markSpawnStopped(db: Database.Database, handle: string): void {
   handle = normalizeHandle(handle);
   db.prepare(`
@@ -227,22 +236,74 @@ export function spawnAgent(
   opts: SpawnOptions,
   executor: Executor = defaultExecutor
 ): { pid: number; worktreePath: string; branch: string; child?: ChildProcess } {
+  return _spawnProcess(db, { ...opts, isRespawn: false }, executor);
+}
+
+/**
+ * Respawn a stopped agent. Reuses existing agent record and worktree.
+ * Generates a new API key since the original is not recoverable (hashed).
+ */
+export function respawnAgent(
+  db: Database.Database,
+  handle: string,
+  opts: { mission?: string; serverUrl: string; projectDir: string; foreground?: boolean },
+  executor: Executor = defaultExecutor
+): { pid: number; worktreePath: string; branch: string; child?: ChildProcess } {
+  handle = normalizeHandle(handle);
+
+  const agent = getAgent(db, handle);
+  if (!agent) {
+    throw new Error(`Agent ${handle} not found`);
+  }
+
+  const spawn = getSpawn(db, handle);
+  if (spawn && !spawn.stopped_at) {
+    if (isProcessAlive(spawn.pid)) {
+      throw new Error(`${handle} is already running (PID ${spawn.pid})`);
+    }
+    // Process is dead but not marked — mark it now
+    markSpawnStopped(db, handle);
+  }
+
+  const mission = opts.mission ?? agent.mission;
+
+  // Generate new API key for this agent
+  const apiKey = generateKey();
+  storeKey(db, apiKey, handle);
+
+  // Reuse spawnAgent — it handles worktree reuse, CLAUDE.md, subprocess, DB record
+  // But we need to update (not insert) the spawn record if one exists
+  const result = _spawnProcess(db, {
+    handle,
+    mission,
+    apiKey,
+    serverUrl: opts.serverUrl,
+    projectDir: opts.projectDir,
+    foreground: opts.foreground,
+    isRespawn: !!spawn,
+  }, executor);
+
+  return result;
+}
+
+// Internal shared spawn logic used by both spawnAgent and respawnAgent
+function _spawnProcess(
+  db: Database.Database,
+  opts: SpawnOptions & { isRespawn?: boolean },
+  executor: Executor
+): { pid: number; worktreePath: string; branch: string; child?: ChildProcess } {
   const handle = normalizeHandle(opts.handle);
 
-  // Ensure required channels exist
   ensureWorkChannels(db);
 
-  // Check claude is available
   try {
     execSync("which claude", { stdio: "pipe" });
   } catch {
     throw new Error("Claude Code CLI not found. Install it first: https://docs.anthropic.com/en/docs/claude-code");
   }
 
-  // Create worktree
   const { worktreePath, branch } = createWorktree(opts.projectDir, handle);
 
-  // Write CLAUDE.md into worktree
   const claudeMd = generateAgentClaudeMd({
     handle,
     mission: opts.mission,
@@ -252,12 +313,9 @@ export function spawnAgent(
   fs.writeFileSync(path.join(worktreePath, "CLAUDE.md"), claudeMd);
 
   const foreground = opts.foreground ?? false;
-
-  // Create log file (not used in foreground mode)
   const logPath = foreground ? null : path.join(worktreePath, "agent.log");
   const logStream = logPath ? fs.openSync(logPath, "a") : null;
 
-  // Spawn claude subprocess
   const child = executor(
     "claude",
     ["--dangerously-skip-permissions", "-p", `Begin your mission: ${opts.mission}`],
@@ -275,23 +333,31 @@ export function spawnAgent(
 
   const pid = child.pid!;
 
-  // Record spawn
-  insertSpawn(db, {
-    agent_handle: handle,
-    pid,
-    log_path: logPath,
-    worktree_path: worktreePath,
-    branch,
-  });
+  // Insert or update spawn record
+  if (opts.isRespawn) {
+    updateSpawn(db, {
+      agent_handle: handle,
+      pid,
+      log_path: logPath,
+      worktree_path: worktreePath,
+      branch,
+    });
+  } else {
+    insertSpawn(db, {
+      agent_handle: handle,
+      pid,
+      log_path: logPath,
+      worktree_path: worktreePath,
+      branch,
+    });
+  }
 
-  // Auto-status: starting
   createPost(db, {
     author: handle,
     channel: "#status",
     content: `Starting: ${opts.mission}`,
   });
 
-  // Handle process exit
   child.on("exit", (code) => {
     if (logStream !== null) fs.closeSync(logStream);
     markSpawnStopped(db, handle);
@@ -306,7 +372,6 @@ export function spawnAgent(
     }
   });
 
-  // In background mode, unref so parent process can exit
   if (!foreground) {
     child.unref();
   }

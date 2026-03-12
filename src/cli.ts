@@ -783,4 +783,9 @@ program
     spawnSync("tmux", ["attach-session", "-t", session], { stdio: "inherit" });
   });
 
-program.parse();
+// If no subcommand given, launch interactive mode
+if (process.argv.length <= 2) {
+  import("./interactive.js").then((m) => m.startInteractive());
+} else {
+  program.parse();
+}
