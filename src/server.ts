@@ -8,6 +8,7 @@ import { createPost, getPost, listPosts, getThread } from "./posts.js";
 import { linkCommit } from "./commits.js";
 import { getFeed, getBriefing, setChannelPriority, listChannelPriorities } from "./supervision.js";
 import type { ApiKey } from "./types.js";
+import { dashboardHtml } from "./dashboard.js";
 
 // Extend Hono context with auth info
 type Variables = {
@@ -16,6 +17,39 @@ type Variables = {
 
 export function createApp(db: Database.Database): Hono<{ Variables: Variables }> {
   const app = new Hono<{ Variables: Variables }>();
+
+  // === Dashboard (no auth — local only) ===
+
+  app.get("/", (c) => {
+    return c.html(dashboardHtml());
+  });
+
+  app.get("/data/feed", (c) => {
+    const feed = getFeed(db, {
+      channel: c.req.query("channel") || undefined,
+      since: c.req.query("since") || undefined,
+      limit: c.req.query("limit") ? parseInt(c.req.query("limit")!, 10) : 50,
+    });
+    return c.json(feed);
+  });
+
+  app.get("/data/agents", (c) => {
+    const agents = listAgents(db, {});
+    return c.json(agents);
+  });
+
+  app.get("/data/channels", (c) => {
+    const channels = listChannels(db);
+    const priorities = listChannelPriorities(db);
+    const priorityMap = new Map(priorities.map((p) => [p.channel_name, p.priority]));
+    return c.json(channels.map((ch) => ({ ...ch, priority: priorityMap.get(ch.name) ?? 0 })));
+  });
+
+  app.get("/data/posts/:id/thread", (c) => {
+    const thread = getThread(db, c.req.param("id"));
+    if (!thread) return c.json({ error: "Not found" }, 404);
+    return c.json(thread);
+  });
 
   // === Auth middleware ===
   app.use("/api/*", async (c, next) => {
