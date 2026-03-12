@@ -1,12 +1,19 @@
 import type Database from "better-sqlite3";
 import { v4 as uuid } from "uuid";
-import type { Post, PostRow, PostType } from "./types.js";
+import type { Post, PostRow } from "./types.js";
+
+function safeJsonParse(json: string, fallback: Record<string, unknown> = {}): Record<string, unknown> {
+  try {
+    return JSON.parse(json);
+  } catch {
+    return fallback;
+  }
+}
 
 function rowToPost(row: PostRow): Post {
   return {
     ...row,
-    type: row.type as PostType,
-    metadata: JSON.parse(row.metadata) as Record<string, unknown>,
+    metadata: safeJsonParse(row.metadata),
   };
 }
 
@@ -14,22 +21,26 @@ export function createPost(
   db: Database.Database,
   opts: {
     author: string;
+    channel: string;
     content: string;
-    type?: PostType;
     parent_id?: string;
     metadata?: Record<string, unknown>;
   }
 ): Post {
   const author = opts.author.startsWith("@") ? opts.author : `@${opts.author}`;
+  const channel = opts.channel.startsWith("#") ? opts.channel : `#${opts.channel}`;
   const id = uuid();
 
-  // Verify author exists
   const agent = db.prepare("SELECT handle FROM agents WHERE handle = ?").get(author);
   if (!agent) {
     throw new Error(`Agent ${author} not found`);
   }
 
-  // Verify parent exists if specified
+  const ch = db.prepare("SELECT name FROM channels WHERE name = ?").get(channel);
+  if (!ch) {
+    throw new Error(`Channel ${channel} not found`);
+  }
+
   if (opts.parent_id) {
     const parent = db.prepare("SELECT id FROM posts WHERE id = ?").get(opts.parent_id);
     if (!parent) {
@@ -38,16 +49,9 @@ export function createPost(
   }
 
   db.prepare(`
-    INSERT INTO posts (id, author, content, type, parent_id, metadata)
+    INSERT INTO posts (id, author, channel, content, parent_id, metadata)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    author,
-    opts.content,
-    opts.type ?? "update",
-    opts.parent_id ?? null,
-    JSON.stringify(opts.metadata ?? {})
-  );
+  `).run(id, author, channel, opts.content, opts.parent_id ?? null, JSON.stringify(opts.metadata ?? {}));
 
   return getPost(db, id)!;
 }
@@ -61,7 +65,7 @@ export function listPosts(
   db: Database.Database,
   opts?: {
     author?: string;
-    type?: PostType;
+    channel?: string;
     since?: string;
     limit?: number;
     parent_id?: string | null;
@@ -75,9 +79,10 @@ export function listPosts(
     sql += " AND author = ?";
     params.push(author);
   }
-  if (opts?.type) {
-    sql += " AND type = ?";
-    params.push(opts.type);
+  if (opts?.channel) {
+    const channel = opts.channel.startsWith("#") ? opts.channel : `#${opts.channel}`;
+    sql += " AND channel = ?";
+    params.push(channel);
   }
   if (opts?.since) {
     sql += " AND created_at >= ?";
@@ -112,24 +117,31 @@ export function getThread(db: Database.Database, postId: string): PostThread | n
   const post = getPost(db, postId);
   if (!post) return null;
 
-  // Find the root post
+  // Find the root post (with cycle protection)
   let root = post;
+  const visited = new Set<string>([root.id]);
   while (root.parent_id) {
+    if (visited.has(root.parent_id)) break;
+    visited.add(root.parent_id);
     const parent = getPost(db, root.parent_id);
     if (!parent) break;
     root = parent;
   }
 
-  return buildThread(db, root);
+  return buildThread(db, root, new Set());
 }
 
-function buildThread(db: Database.Database, post: Post): PostThread {
+function buildThread(db: Database.Database, post: Post, visited: Set<string>): PostThread {
+  visited.add(post.id);
   const replies = db
     .prepare("SELECT * FROM posts WHERE parent_id = ? ORDER BY created_at ASC")
     .all(post.id) as PostRow[];
 
   return {
     post,
-    replies: replies.map((r) => buildThread(db, rowToPost(r))),
+    replies: replies
+      .map((r) => rowToPost(r))
+      .filter((r) => !visited.has(r.id))
+      .map((r) => buildThread(db, r, visited)),
   };
 }

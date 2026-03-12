@@ -2,40 +2,68 @@ import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
 
-const SCHEMA = `
+// === Foundation schema — AgentHub-compatible, zero supervision concepts ===
+
+const FOUNDATION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
   handle TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('manager', 'worker')),
-  team TEXT,
   mission TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'idle', 'blocked', 'stopped')),
-  style TEXT DEFAULT '{}',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  metadata TEXT DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS channels (
+  name TEXT PRIMARY KEY,
+  description TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS posts (
   id TEXT PRIMARY KEY,
   author TEXT NOT NULL REFERENCES agents(handle),
+  channel TEXT NOT NULL REFERENCES channels(name),
   content TEXT NOT NULL,
-  type TEXT NOT NULL DEFAULT 'update' CHECK(type IN ('update', 'route', 'decision', 'escalation', 'directive', 'abandoned', 'status')),
   parent_id TEXT REFERENCES posts(id),
   metadata TEXT DEFAULT '{}',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS commits (
   hash TEXT PRIMARY KEY,
   post_id TEXT NOT NULL REFERENCES posts(id),
   files TEXT NOT NULL DEFAULT '[]',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+  key_hash TEXT PRIMARY KEY,
+  agent_handle TEXT REFERENCES agents(handle),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  revoked_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author);
+CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel);
 CREATE INDEX IF NOT EXISTS idx_posts_parent ON posts(parent_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_posts_type ON posts(type);
 CREATE INDEX IF NOT EXISTS idx_commits_post ON commits(post_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_handle ON api_keys(agent_handle);
+`;
+
+// === Supervision schema — AgentBoard layer, reads foundation, own tables ===
+
+const SUPERVISION_SCHEMA = `
+CREATE TABLE IF NOT EXISTS channel_priority (
+  channel_name TEXT PRIMARY KEY REFERENCES channels(name),
+  priority INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS cursors (
+  name TEXT PRIMARY KEY,
+  timestamp TEXT NOT NULL
+);
 `;
 
 const DB_FILE = "board.db";
@@ -50,7 +78,8 @@ export function getDb(dir?: string): Database.Database {
 
 export function initDb(dir?: string): Database.Database {
   const db = getDb(dir);
-  db.exec(SCHEMA);
+  db.exec(FOUNDATION_SCHEMA);
+  db.exec(SUPERVISION_SCHEMA);
   return db;
 }
 

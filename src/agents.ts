@@ -1,16 +1,23 @@
 import type Database from "better-sqlite3";
-import type { Agent, AgentRole, AgentRow, AgentStatus, AgentStyle } from "./types.js";
+import type { Agent, AgentRow, AgentStatus } from "./types.js";
+
+function safeJsonParse(json: string, fallback: Record<string, unknown> = {}): Record<string, unknown> {
+  try {
+    return JSON.parse(json);
+  } catch {
+    return fallback;
+  }
+}
 
 function rowToAgent(row: AgentRow): Agent {
   return {
     ...row,
-    role: row.role as AgentRole,
     status: row.status as AgentStatus,
-    style: JSON.parse(row.style) as AgentStyle,
+    metadata: safeJsonParse(row.metadata),
   };
 }
 
-function normalizeHandle(handle: string): string {
+export function normalizeHandle(handle: string): string {
   return handle.startsWith("@") ? handle : `@${handle}`;
 }
 
@@ -19,27 +26,21 @@ export function createAgent(
   opts: {
     handle: string;
     name: string;
-    role: AgentRole;
     mission: string;
-    team?: string;
-    style?: AgentStyle;
+    metadata?: Record<string, unknown>;
   }
 ): Agent {
   const handle = normalizeHandle(opts.handle);
 
-  const stmt = db.prepare(`
-    INSERT INTO agents (handle, name, role, team, mission, style)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
+  const existing = db.prepare("SELECT handle FROM agents WHERE handle = ?").get(handle);
+  if (existing) {
+    throw new Error(`Agent ${handle} already exists`);
+  }
 
-  stmt.run(
-    handle,
-    opts.name,
-    opts.role,
-    opts.team ?? null,
-    opts.mission,
-    JSON.stringify(opts.style ?? {})
-  );
+  db.prepare(`
+    INSERT INTO agents (handle, name, mission, metadata)
+    VALUES (?, ?, ?, ?)
+  `).run(handle, opts.name, opts.mission, JSON.stringify(opts.metadata ?? {}));
 
   return getAgent(db, handle)!;
 }
@@ -52,26 +53,17 @@ export function getAgent(db: Database.Database, handle: string): Agent | null {
 
 export function listAgents(
   db: Database.Database,
-  opts?: { role?: AgentRole; status?: AgentStatus; team?: string }
+  opts?: { status?: AgentStatus }
 ): Agent[] {
   let sql = "SELECT * FROM agents WHERE 1=1";
   const params: unknown[] = [];
 
-  if (opts?.role) {
-    sql += " AND role = ?";
-    params.push(opts.role);
-  }
   if (opts?.status) {
     sql += " AND status = ?";
     params.push(opts.status);
   }
-  if (opts?.team) {
-    sql += " AND team = ?";
-    params.push(opts.team);
-  }
 
   sql += " ORDER BY created_at ASC";
-
   const rows = db.prepare(sql).all(...params) as AgentRow[];
   return rows.map(rowToAgent);
 }
@@ -79,7 +71,7 @@ export function listAgents(
 export function updateAgent(
   db: Database.Database,
   handle: string,
-  updates: Partial<Pick<Agent, "name" | "mission" | "status" | "team" | "style">>
+  updates: Partial<Pick<Agent, "name" | "mission" | "status" | "metadata">>
 ): Agent | null {
   handle = normalizeHandle(handle);
 
@@ -98,13 +90,9 @@ export function updateAgent(
     fields.push("status = ?");
     params.push(updates.status);
   }
-  if (updates.team !== undefined) {
-    fields.push("team = ?");
-    params.push(updates.team);
-  }
-  if (updates.style !== undefined) {
-    fields.push("style = ?");
-    params.push(JSON.stringify(updates.style));
+  if (updates.metadata !== undefined) {
+    fields.push("metadata = ?");
+    params.push(JSON.stringify(updates.metadata));
   }
 
   if (fields.length === 0) return getAgent(db, handle);
