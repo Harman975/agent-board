@@ -314,6 +314,86 @@ export function spawnAgent(
   return { pid, worktreePath, branch, child: foreground ? child : undefined };
 }
 
+export interface MergeResult {
+  branch: string;
+  mergedCommits: number;
+  worktreeRemoved: boolean;
+}
+
+export function mergeAgent(
+  db: Database.Database,
+  handle: string,
+  projectDir: string,
+  opts: { cleanup?: boolean } = {}
+): MergeResult {
+  handle = normalizeHandle(handle);
+  const spawn = getSpawn(db, handle);
+  if (!spawn) {
+    throw new Error(`No spawn record for ${handle}`);
+  }
+
+  // Agent must be stopped (or process dead)
+  if (!spawn.stopped_at && isProcessAlive(spawn.pid)) {
+    throw new Error(`${handle} is still running (PID ${spawn.pid}). Stop it first with \`board kill ${handle}\``);
+  }
+
+  const branch = spawn.branch;
+  if (!branch) {
+    throw new Error(`No branch recorded for ${handle}`);
+  }
+
+  // Count commits on branch that aren't on main
+  let mergedCommits: number;
+  try {
+    const log = execSync(`git log main..${branch} --oneline`, {
+      cwd: projectDir,
+      encoding: "utf-8",
+      stdio: "pipe",
+    }).trim();
+    mergedCommits = log ? log.split("\n").length : 0;
+  } catch {
+    throw new Error(`Branch ${branch} not found or cannot compare with main`);
+  }
+
+  if (mergedCommits === 0) {
+    throw new Error(`Branch ${branch} has no new commits to merge into main`);
+  }
+
+  // Merge the branch into main
+  try {
+    execSync(`git merge ${branch} --no-edit`, {
+      cwd: projectDir,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+  } catch (err: any) {
+    throw new Error(
+      `Merge conflict merging ${branch} into current branch. Resolve manually:\n` +
+      `  cd ${projectDir} && git merge ${branch}`
+    );
+  }
+
+  // Optionally clean up worktree and branch
+  let worktreeRemoved = false;
+  if (opts.cleanup && spawn.worktree_path) {
+    removeWorktree(projectDir, spawn.worktree_path);
+    // Delete the branch too
+    try {
+      execSync(`git branch -d ${branch}`, { cwd: projectDir, stdio: "pipe" });
+    } catch {
+      // Branch may not delete if not fully merged — that's ok after merge
+      try {
+        execSync(`git branch -D ${branch}`, { cwd: projectDir, stdio: "pipe" });
+      } catch {
+        // Best effort
+      }
+    }
+    worktreeRemoved = true;
+  }
+
+  return { branch, mergedCommits, worktreeRemoved };
+}
+
 export function killAgent(
   db: Database.Database,
   handle: string,

@@ -652,6 +652,31 @@ program
     }));
   });
 
+// --- board merge ---
+program
+  .command("merge <handle>")
+  .description("Merge a stopped agent's worktree branch into main")
+  .option("--cleanup", "Remove worktree and branch after merge")
+  .action(async (handle: string, opts: { cleanup?: boolean }) => {
+    const { mergeAgent, getSpawn } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+    const h = handle.startsWith("@") ? handle : `@${handle}`;
+
+    try {
+      const result = mergeAgent(db, h, process.cwd(), { cleanup: opts.cleanup });
+      console.log(`Merged ${result.branch} into main (${result.mergedCommits} commit${result.mergedCommits !== 1 ? "s" : ""})`);
+      if (result.worktreeRemoved) {
+        console.log(`Cleaned up worktree and branch`);
+      }
+    } catch (err: any) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    } finally {
+      db.close();
+    }
+  });
+
 // --- board logs ---
 program
   .command("logs <handle>")
