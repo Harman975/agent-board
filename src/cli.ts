@@ -477,7 +477,8 @@ program
   .description("Create an agent and launch a Claude Code subprocess")
   .requiredOption("--mission <mission>", "Agent mission / task description")
   .option("--name <name>", "Agent display name")
-  .action(async (handle: string, opts: { mission: string; name?: string }) => {
+  .option("--foreground", "Run in foreground (inherits terminal I/O)")
+  .action(async (handle: string, opts: { mission: string; name?: string; foreground?: boolean }) => {
     const rc = requireRC();
 
     // Create agent via API
@@ -502,16 +503,31 @@ program
         apiKey: res.data.api_key,
         serverUrl: rc.url,
         projectDir: process.cwd(),
+        foreground: opts.foreground,
       });
-      console.log(`Spawned ${res.data.handle} (PID ${result.pid})`);
-      console.log(`  Branch:   ${result.branch}`);
-      console.log(`  Worktree: ${result.worktreePath}`);
-      console.log(`  Logs:     ${result.worktreePath}/agent.log`);
+
+      if (opts.foreground) {
+        console.log(`Running ${res.data.handle} in foreground (PID ${result.pid})`);
+        console.log(`  Branch:   ${result.branch}`);
+        console.log(`  Worktree: ${result.worktreePath}\n`);
+        // Wait for child to exit
+        await new Promise<void>((resolve) => {
+          result.child!.on("exit", () => {
+            db.close();
+            resolve();
+          });
+        });
+      } else {
+        console.log(`Spawned ${res.data.handle} (PID ${result.pid})`);
+        console.log(`  Branch:   ${result.branch}`);
+        console.log(`  Worktree: ${result.worktreePath}`);
+        console.log(`  Logs:     ${result.worktreePath}/agent.log`);
+        db.close();
+      }
     } catch (err: any) {
       console.error(`Spawn failed: ${err.message}`);
-      process.exit(1);
-    } finally {
       db.close();
+      process.exit(1);
     }
   });
 
@@ -664,6 +680,82 @@ program
     const allLines = content.split("\n");
     const tail = allLines.slice(-lines).join("\n");
     console.log(tail);
+  });
+
+// --- board tmux ---
+program
+  .command("tmux")
+  .description("Open a tmux session with a pane per active agent")
+  .option("--session <name>", "tmux session name", "board")
+  .option("--tail", "Tail log files instead of foreground spawn (for already-running agents)", true)
+  .action(async (opts: { session: string; tail: boolean }) => {
+    const { execSync } = await import("child_process");
+
+    // Check tmux is available
+    try {
+      execSync("which tmux", { stdio: "pipe" });
+    } catch {
+      console.error("tmux not found. Install it: brew install tmux");
+      process.exit(1);
+    }
+
+    const { listSpawns, isProcessAlive } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+
+    const spawns = listSpawns(db, true).filter((s) => isProcessAlive(s.pid));
+    db.close();
+
+    if (spawns.length === 0) {
+      console.error("No active agents. Spawn some first with `board spawn`.");
+      process.exit(1);
+    }
+
+    const session = opts.session;
+
+    // Kill existing session if any
+    try {
+      execSync(`tmux kill-session -t ${session}`, { stdio: "pipe" });
+    } catch {
+      // Session didn't exist — fine
+    }
+
+    // Create new session with first agent's logs
+    const first = spawns[0];
+    const logCmd = (s: typeof first) =>
+      s.log_path ? `tail -f ${s.log_path}` : `echo 'No log file for ${s.agent_handle}'`;
+
+    execSync(
+      `tmux new-session -d -s ${session} -n "${first.agent_handle}" "${logCmd(first)}"`,
+      { stdio: "pipe" }
+    );
+
+    // Add panes for remaining agents
+    for (let i = 1; i < spawns.length; i++) {
+      const s = spawns[i];
+      execSync(
+        `tmux split-window -t ${session} "${logCmd(s)}"`,
+        { stdio: "pipe" }
+      );
+      // Rebalance after each split
+      execSync(`tmux select-layout -t ${session} tiled`, { stdio: "pipe" });
+    }
+
+    // Set pane titles
+    for (let i = 0; i < spawns.length; i++) {
+      execSync(
+        `tmux select-pane -t ${session}:0.${i} -T "${spawns[i].agent_handle}"`,
+        { stdio: "pipe" }
+      );
+    }
+
+    // Enable pane border status to show agent names
+    execSync(`tmux set-option -t ${session} pane-border-status top`, { stdio: "pipe" });
+    execSync(`tmux set-option -t ${session} pane-border-format " #{pane_title} "`, { stdio: "pipe" });
+
+    // Attach to the session
+    const { spawnSync } = await import("child_process");
+    spawnSync("tmux", ["attach-session", "-t", session], { stdio: "inherit" });
   });
 
 program.parse();

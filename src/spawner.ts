@@ -24,13 +24,14 @@ export interface SpawnOptions {
   apiKey: string;
   serverUrl: string;
   projectDir: string;
+  foreground?: boolean;
 }
 
 // Executor interface for dependency injection (testability)
 export type Executor = (
   command: string,
   args: string[],
-  opts: { cwd: string; env: Record<string, string>; stdio: any }
+  opts: { cwd: string; env: Record<string, string>; stdio: any; detached?: boolean }
 ) => ChildProcess;
 
 const defaultExecutor: Executor = (command, args, opts) => {
@@ -38,7 +39,7 @@ const defaultExecutor: Executor = (command, args, opts) => {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env },
     stdio: opts.stdio,
-    detached: true,
+    detached: opts.detached ?? true,
   });
 };
 
@@ -225,7 +226,7 @@ export function spawnAgent(
   db: Database.Database,
   opts: SpawnOptions,
   executor: Executor = defaultExecutor
-): { pid: number; worktreePath: string; branch: string } {
+): { pid: number; worktreePath: string; branch: string; child?: ChildProcess } {
   const handle = normalizeHandle(opts.handle);
 
   // Ensure required channels exist
@@ -250,11 +251,13 @@ export function spawnAgent(
   });
   fs.writeFileSync(path.join(worktreePath, "CLAUDE.md"), claudeMd);
 
-  // Create log file
-  const logPath = path.join(worktreePath, "agent.log");
+  const foreground = opts.foreground ?? false;
+
+  // Create log file (not used in foreground mode)
+  const logPath = foreground ? null : path.join(worktreePath, "agent.log");
+  const logStream = logPath ? fs.openSync(logPath, "a") : null;
 
   // Spawn claude subprocess
-  const logStream = fs.openSync(logPath, "a");
   const child = executor(
     "claude",
     ["--dangerously-skip-permissions", "-p", `Begin your mission: ${opts.mission}`],
@@ -265,7 +268,8 @@ export function spawnAgent(
         BOARD_KEY: opts.apiKey,
         BOARD_AGENT: handle,
       },
-      stdio: ["ignore", logStream, logStream],
+      stdio: foreground ? "inherit" : ["ignore", logStream!, logStream!],
+      detached: !foreground,
     }
   );
 
@@ -289,7 +293,7 @@ export function spawnAgent(
 
   // Handle process exit
   child.on("exit", (code) => {
-    fs.closeSync(logStream);
+    if (logStream !== null) fs.closeSync(logStream);
     markSpawnStopped(db, handle);
     try {
       if (code === 0) {
@@ -302,10 +306,12 @@ export function spawnAgent(
     }
   });
 
-  // Unref so parent process can exit
-  child.unref();
+  // In background mode, unref so parent process can exit
+  if (!foreground) {
+    child.unref();
+  }
 
-  return { pid, worktreePath, branch };
+  return { pid, worktreePath, branch, child: foreground ? child : undefined };
 }
 
 export function killAgent(
