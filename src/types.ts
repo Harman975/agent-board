@@ -154,6 +154,62 @@ export interface SprintBranch {
   deletions: number;
 }
 
+// === Sprint orchestrator types ===
+
+export type SprintStatus = "running" | "finished" | "failed";
+
+export interface Sprint {
+  name: string;
+  goal: string;
+  status: SprintStatus;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface SprintAgent {
+  sprint_name: string;
+  agent_handle: string;
+  identity_name: string | null;
+  mission: string | null;
+}
+
+export interface SprintReport {
+  sprint: Sprint;
+  agents: SprintAgentReport[];
+  totals: { additions: number; deletions: number; filesChanged: number };
+  conflicts: string[];
+  escalations: number;
+  mergeOrder: string[];
+}
+
+export interface SprintAgentReport {
+  handle: string;
+  branch: string | null;
+  alive: boolean;
+  stopped: boolean;
+  additions: number;
+  deletions: number;
+  filesChanged: number;
+  mission: string | null;
+  lastPost: string | null;
+  report: ParsedAgentReport | null;
+}
+
+export interface ParsedAgentReport {
+  summary: string;
+  architecture: string | null;
+  dataFlow: string | null;
+  edgeCases: string | null;
+  tests: string | null;
+}
+
+export interface Alert {
+  type: "escalation" | "crashed" | "stale";
+  agent: string;
+  message: string;
+  time: string;
+}
+
 // === DAG types ===
 
 export interface DagCommit {

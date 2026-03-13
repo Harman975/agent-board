@@ -92,6 +92,13 @@ function createWorktree(projectDir: string, handle: string): { worktreePath: str
     execSync(`git worktree add -b ${branch} "${worktreePath}"`, { cwd: projectDir, stdio: "pipe" });
   }
 
+  // Symlink node_modules from project root so agents can run tests/builds
+  const nodeModulesSrc = path.join(projectDir, "node_modules");
+  const nodeModulesDst = path.join(worktreePath, "node_modules");
+  if (fs.existsSync(nodeModulesSrc) && !fs.existsSync(nodeModulesDst)) {
+    fs.symlinkSync(nodeModulesSrc, nodeModulesDst, "dir");
+  }
+
   return { worktreePath, branch };
 }
 

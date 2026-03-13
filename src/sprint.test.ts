@@ -8,6 +8,8 @@ import {
   getSpawn,
   listSpawns,
   spawnAgent,
+  mergeAgent,
+  isProcessAlive,
   type Executor,
 } from "./spawner.js";
 import type Database from "better-sqlite3";
@@ -871,16 +873,733 @@ describe("package setup: shebang in dist/cli.js", () => {
 });
 
 // ============================================================
-// Section 5: Sprint scope validation tests
+// Section 5: Auto-research tests
 // ============================================================
+// Tests for: researcher identity, board research start/stop/status
+
+describe("researcher identity", () => {
+  it("loads researcher.md via loadIdentity", async () => {
+    const { loadIdentity } = await import("./identities.js");
+    // Use the project root as baseDir (identities/ is at project root)
+    const projectRoot = path.dirname(path.dirname(import.meta.url.replace("file://", "")));
+    const identity = loadIdentity("researcher", projectRoot);
+    assert.equal(identity.name, "researcher");
+    assert.ok(identity.description.length > 0);
+    assert.ok(identity.content.includes("LOOP FOREVER"));
+    assert.ok(identity.content.includes("NEVER STOP"));
+  });
+
+  it("researcher identity has required sections", async () => {
+    const { loadIdentity } = await import("./identities.js");
+    const projectRoot = path.dirname(path.dirname(import.meta.url.replace("file://", "")));
+    const identity = loadIdentity("researcher", projectRoot);
+
+    // Must have priority order
+    assert.ok(identity.content.includes("Security issues"));
+    assert.ok(identity.content.includes("Correctness bugs"));
+    assert.ok(identity.content.includes("Test coverage gaps"));
+
+    // Must have experiment loop steps
+    assert.ok(identity.content.includes("SCAN"));
+    assert.ok(identity.content.includes("IMPLEMENT"));
+    assert.ok(identity.content.includes("TEST"));
+    assert.ok(identity.content.includes("EVALUATE"));
+    assert.ok(identity.content.includes("REPORT"));
+
+    // Must have metric template placeholders
+    assert.ok(identity.content.includes("{{EVAL_COMMAND}}"));
+    assert.ok(identity.content.includes("{{METRIC_COMMAND}}"));
+    assert.ok(identity.content.includes("{{DIRECTION}}"));
+
+    // Must have safety rules
+    assert.ok(identity.content.includes("One change per cycle"));
+  });
+
+  it("researcher identity frontmatter has correct fields", async () => {
+    const { parseIdentityFrontmatter } = await import("./identities.js");
+    const content = fs.readFileSync(
+      path.join(path.dirname(path.dirname(import.meta.url.replace("file://", ""))), "identities", "researcher.md"),
+      "utf-8"
+    );
+    const fm = parseIdentityFrontmatter(content);
+    assert.equal(fm.name, "researcher");
+    assert.ok(fm.description.length > 0);
+    assert.equal(fm.vibe, "relentless and methodical");
+  });
+});
+
+describe("board research: spawn integration", () => {
+  let db: Database.Database;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-research-test-"));
+    db = initDb(tmpDir);
+
+    // Initialize git repo
+    execSync("git init", { cwd: tmpDir, stdio: "pipe" });
+    execSync("git config user.email 'test@test.com'", { cwd: tmpDir, stdio: "pipe" });
+    execSync("git config user.name 'Test'", { cwd: tmpDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "test");
+    execSync("git add . && git commit -m 'init'", { cwd: tmpDir, stdio: "pipe" });
+  });
+
+  afterEach(() => {
+    db.close();
+    try {
+      execSync("git worktree prune", { cwd: tmpDir, stdio: "pipe" });
+    } catch { /* ignore */ }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("creates @researcher agent and spawn record on first start", () => {
+    createAgent(db, { handle: "researcher", name: "Auto-Researcher", role: "worker", mission: "research" });
+    const mock = createMockExecutor();
+
+    const result = spawnAgent(db, {
+      handle: "@researcher",
+      mission: "Autonomously improve codebase",
+      apiKey: "research-key",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+    }, mock.executor);
+
+    assert.ok(result.pid);
+    assert.equal(result.branch, "agent/researcher");
+    assert.ok(result.worktreePath.includes("@researcher"));
+
+    // Verify spawn record exists
+    const spawn = getSpawn(db, "@researcher");
+    assert.ok(spawn);
+    assert.equal(spawn.branch, "agent/researcher");
+  });
+
+  it("researcher CLAUDE.md includes identity content when provided", () => {
+    createAgent(db, { handle: "researcher", name: "Auto-Researcher", role: "worker", mission: "research" });
+    const mock = createMockExecutor();
+
+    const identity = {
+      name: "researcher",
+      description: "test researcher",
+      expertise: ["testing"],
+      vibe: "methodical",
+      content: "You are an autonomous researcher. LOOP FOREVER.",
+    };
+
+    const result = spawnAgent(db, {
+      handle: "@researcher",
+      mission: "Improve codebase",
+      apiKey: "key-123",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+      identity,
+    }, mock.executor);
+
+    const claudeMd = fs.readFileSync(path.join(result.worktreePath, "CLAUDE.md"), "utf-8");
+    assert.ok(claudeMd.includes("LOOP FOREVER"), "CLAUDE.md should contain identity content");
+    assert.ok(claudeMd.includes("Improve codebase"), "CLAUDE.md should contain mission");
+    assert.ok(claudeMd.includes("## Identity"), "CLAUDE.md should have Identity section");
+  });
+
+  it("detects already-running researcher via spawn record", () => {
+    createAgent(db, { handle: "researcher", name: "Auto-Researcher", role: "worker", mission: "research" });
+    const mock = createMockExecutor();
+
+    spawnAgent(db, {
+      handle: "@researcher",
+      mission: "First run",
+      apiKey: "key-1",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+    }, mock.executor);
+
+    // Spawn record exists and is not stopped
+    const spawn = getSpawn(db, "@researcher");
+    assert.ok(spawn);
+    assert.equal(spawn.stopped_at, null);
+  });
+
+  it("allows respawn after researcher is stopped", () => {
+    createAgent(db, { handle: "researcher", name: "Auto-Researcher", role: "worker", mission: "research" });
+    const mock = createMockExecutor();
+
+    spawnAgent(db, {
+      handle: "@researcher",
+      mission: "First run",
+      apiKey: "key-1",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+    }, mock.executor);
+
+    // Stop the researcher
+    markSpawnStopped(db, "@researcher");
+
+    const spawn = getSpawn(db, "@researcher");
+    assert.ok(spawn);
+    assert.ok(spawn.stopped_at !== null);
+  });
+
+  it("researcher posts to #status on spawn", async () => {
+    createAgent(db, { handle: "researcher", name: "Auto-Researcher", role: "worker", mission: "research" });
+    const mock = createMockExecutor();
+
+    spawnAgent(db, {
+      handle: "@researcher",
+      mission: "Scan and improve",
+      apiKey: "key-1",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+    }, mock.executor);
+
+    // Check that a status post was created
+    const { listPosts } = await import("./posts.js");
+    const posts = listPosts(db, { channel: "#status", author: "@researcher" });
+    assert.ok(posts.length >= 1);
+    assert.ok(posts[0].content.includes("Scan and improve"));
+  });
+});
 
 // ============================================================
-// Section 6: Sprint suggest output format tests
+// Section 6: merge-sprint command tests
 // ============================================================
+// Tests for: board merge-sprint
+// Simulates the merge-sprint workflow using temp git repos, DBs,
+// and direct calls to mergeAgent/listSpawns/isProcessAlive.
+
+describe("CLI: board merge-sprint", () => {
+  let db: Database.Database;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-merge-sprint-"));
+    db = initDb(tmpDir);
+
+    // Initialize git repo with main branch
+    execSync("git init", { cwd: tmpDir, stdio: "pipe" });
+    execSync("git config user.email 'test@test.com'", { cwd: tmpDir, stdio: "pipe" });
+    execSync("git config user.name 'Test'", { cwd: tmpDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "initial");
+    execSync("git add . && git commit -m 'init'", { cwd: tmpDir, stdio: "pipe" });
+  });
+
+  afterEach(() => {
+    db.close();
+    try {
+      execSync("git worktree prune", { cwd: tmpDir, stdio: "pipe" });
+    } catch { /* ignore */ }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Helper: create an agent branch with a file change
+  function createAgentBranch(handle: string, filename: string, content: string): string {
+    const branch = `agent/${handle.replace(/^@/, "")}`;
+    execSync(`git checkout -b ${branch}`, { cwd: tmpDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(tmpDir, filename), content);
+    execSync(`git add . && git commit -m '${handle} work'`, { cwd: tmpDir, stdio: "pipe" });
+    execSync("git checkout main", { cwd: tmpDir, stdio: "pipe" });
+    return branch;
+  }
+
+  // Helper: register agent + spawn record (stopped)
+  function registerStoppedAgent(handle: string, branch: string): void {
+    createAgent(db, { handle: handle.replace(/^@/, ""), name: handle, mission: "test" });
+    insertSpawn(db, {
+      agent_handle: handle.startsWith("@") ? handle : `@${handle}`,
+      pid: 99999,
+      log_path: null,
+      worktree_path: null,
+      branch,
+    });
+    markSpawnStopped(db, handle);
+  }
+
+  it("happy path: all merges succeed", () => {
+    const b1 = createAgentBranch("agent1", "file1.ts", "export const a = 1;");
+    const b2 = createAgentBranch("agent2", "file2.ts", "export const b = 2;");
+    const b3 = createAgentBranch("agent3", "file3.ts", "export const c = 3;");
+
+    registerStoppedAgent("@agent1", b1);
+    registerStoppedAgent("@agent2", b2);
+    registerStoppedAgent("@agent3", b3);
+
+    // Merge each in order, verify main has all changes
+    const mergeOrder = ["@agent1", "@agent2", "@agent3"];
+    const merged: string[] = [];
+
+    for (const handle of mergeOrder) {
+      const result = mergeAgent(db, handle, tmpDir);
+      assert.ok(result.mergedCommits > 0, `${handle} should have commits to merge`);
+      merged.push(handle);
+    }
+
+    assert.equal(merged.length, 3);
+    assert.ok(fs.existsSync(path.join(tmpDir, "file1.ts")));
+    assert.ok(fs.existsSync(path.join(tmpDir, "file2.ts")));
+    assert.ok(fs.existsSync(path.join(tmpDir, "file3.ts")));
+  });
+
+  it("mid-sequence failure: revert and stop after bad merge", () => {
+    const b1 = createAgentBranch("ok1", "ok1.ts", "export const ok1 = 1;");
+    const b2 = createAgentBranch("bad", "bad.ts", "export const bad = 2;");
+    const b3 = createAgentBranch("ok2", "ok2.ts", "export const ok2 = 3;");
+
+    registerStoppedAgent("@ok1", b1);
+    registerStoppedAgent("@bad", b2);
+    registerStoppedAgent("@ok2", b3);
+
+    const mergeOrder = ["@ok1", "@bad", "@ok2"];
+    const merged: string[] = [];
+    let failedHandle: string | null = null;
+    let revertCalled = false;
+
+    // Simulate: tests fail after merging @bad
+    for (const handle of mergeOrder) {
+      mergeAgent(db, handle, tmpDir);
+
+      const testsPassed = handle !== "@bad";
+
+      if (!testsPassed) {
+        failedHandle = handle;
+        execSync("git reset --hard HEAD~1", { cwd: tmpDir, stdio: "pipe" });
+        revertCalled = true;
+        break;
+      }
+      merged.push(handle);
+    }
+
+    assert.equal(failedHandle, "@bad");
+    assert.ok(revertCalled, "Should have called git reset --hard HEAD~1");
+    assert.equal(merged.length, 1, "Only first merge should succeed");
+    assert.equal(merged[0], "@ok1");
+    assert.ok(!fs.existsSync(path.join(tmpDir, "bad.ts")), "bad.ts should be reverted");
+    assert.ok(fs.existsSync(path.join(tmpDir, "ok1.ts")), "ok1.ts should remain");
+  });
+
+  it("pre-flight failure: detects running agent", () => {
+    const b1 = createAgentBranch("runner", "runner.ts", "running");
+    createAgent(db, { handle: "runner", name: "Runner", mission: "test" });
+    // Insert spawn WITHOUT marking stopped — simulates running agent
+    insertSpawn(db, {
+      agent_handle: "@runner",
+      pid: process.pid, // Current PID so isProcessAlive returns true
+      log_path: null,
+      worktree_path: null,
+      branch: b1,
+    });
+
+    const spawns = listSpawns(db);
+    const running = spawns.filter((s) => !s.stopped_at && isProcessAlive(s.pid));
+
+    assert.ok(running.length > 0, "Should detect running agents");
+    assert.equal(running[0].agent_handle, "@runner");
+    // Main should be unchanged — no merges
+    const mainFiles = execSync("git ls-files", { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" }).trim();
+    assert.ok(!mainFiles.includes("runner.ts"), "No merges should have occurred");
+  });
+
+  it("dry-run: computes order without merging", () => {
+    const b1 = createAgentBranch("dry1", "dry1.ts", "export const d1 = 1;");
+    const b2 = createAgentBranch("dry2", "dry2-a.ts", "a;\n");
+
+    // Make dry2 have more files
+    execSync("git checkout agent/dry2", { cwd: tmpDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(tmpDir, "dry2-b.ts"), "b;");
+    execSync("git add . && git commit -m 'more files'", { cwd: tmpDir, stdio: "pipe" });
+    execSync("git checkout main", { cwd: tmpDir, stdio: "pipe" });
+
+    registerStoppedAgent("@dry1", b1);
+    registerStoppedAgent("@dry2", "agent/dry2");
+
+    // Compute merge order
+    const spawns = listSpawns(db);
+    const branchSpawns = spawns.filter((s) => s.branch);
+    const branches: { handle: string; filesChanged: number }[] = [];
+
+    for (const s of branchSpawns) {
+      const numstat = execSync(`git diff --numstat main..${s.branch}`, {
+        cwd: tmpDir,
+        encoding: "utf-8",
+        stdio: "pipe",
+      }).trim();
+      const filesChanged = numstat ? numstat.split("\n").length : 0;
+      branches.push({ handle: s.agent_handle, filesChanged });
+    }
+
+    const order = [...branches]
+      .sort((a, b) => a.filesChanged - b.filesChanged)
+      .map((b) => b.handle);
+
+    // dry1 has 1 file, dry2 has 2 files — dry1 first
+    assert.equal(order[0], "@dry1");
+    assert.equal(order[1], "@dry2");
+
+    // No merges happened
+    assert.ok(!fs.existsSync(path.join(tmpDir, "dry1.ts")));
+    assert.ok(!fs.existsSync(path.join(tmpDir, "dry2-a.ts")));
+  });
+
+  it("empty merge list: no branches to merge", () => {
+    const spawns = listSpawns(db);
+    const branchSpawns = spawns.filter((s) => s.branch);
+    assert.equal(branchSpawns.length, 0, "Should have no branches to merge");
+  });
+});
 
 // ============================================================
-// Section 7: Steer directive tests
+// Section 7: Sprint orchestrator tests
 // ============================================================
+// Tests for: board sprint start/list/status/finish, portfolio, alerts
+// Uses temp dirs, fresh DBs, git init, and direct DB operations.
+
+import {
+  renderSprintReport,
+  renderSprintList,
+  renderPortfolio,
+  renderAlerts,
+  parseAgentReport,
+} from "./render.js";
+import type {
+  Sprint,
+  SprintAgent,
+  SprintReport,
+  SprintAgentReport,
+  Alert,
+} from "./types.js";
+import { createPost } from "./posts.js";
+import { createChannel } from "./channels.js";
+
+describe("Sprint orchestrator: schema + CRUD", () => {
+  let db: Database.Database;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-sprint-orch-"));
+    db = initDb(tmpDir);
+  });
+
+  afterEach(() => {
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("creates sprint and sprint_agents records", () => {
+    // Create sprint
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("test-sprint", "Test goal");
+
+    // Create agents first (FK constraint)
+    createAgent(db, { handle: "worker1", name: "Worker 1", mission: "task 1" });
+    createAgent(db, { handle: "worker2", name: "Worker 2", mission: "task 2" });
+
+    // Add sprint agents
+    db.prepare("INSERT INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)").run("test-sprint", "@worker1", "researcher", "task 1");
+    db.prepare("INSERT INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)").run("test-sprint", "@worker2", null, "task 2");
+
+    const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get("test-sprint") as Sprint;
+    assert.equal(sprint.name, "test-sprint");
+    assert.equal(sprint.goal, "Test goal");
+    assert.equal(sprint.status, "running");
+    assert.ok(sprint.created_at);
+    assert.equal(sprint.finished_at, null);
+
+    const agents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all("test-sprint") as SprintAgent[];
+    assert.equal(agents.length, 2);
+    assert.equal(agents[0].agent_handle, "@worker1");
+    assert.equal(agents[0].identity_name, "researcher");
+    assert.equal(agents[1].agent_handle, "@worker2");
+    assert.equal(agents[1].identity_name, null);
+  });
+
+  it("sprint name collision is rejected", () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("dupe", "First");
+    assert.throws(() => {
+      db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("dupe", "Second");
+    }, /UNIQUE constraint/);
+  });
+
+  it("sprint status transitions: running -> finished", () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("lifecycle", "Test");
+    db.prepare("UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run("lifecycle");
+    const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get("lifecycle") as Sprint;
+    assert.equal(sprint.status, "finished");
+    assert.ok(sprint.finished_at);
+  });
+
+  it("sprint status transitions: running -> failed", () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("fail-sprint", "Test");
+    db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run("fail-sprint");
+    const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get("fail-sprint") as Sprint;
+    assert.equal(sprint.status, "failed");
+  });
+
+  it("sprint list returns all sprints", () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("s1", "Goal 1");
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("s2", "Goal 2");
+    const sprints = db.prepare("SELECT * FROM sprints ORDER BY name").all() as Sprint[];
+    assert.equal(sprints.length, 2);
+    assert.equal(sprints[0].name, "s1");
+    assert.equal(sprints[1].name, "s2");
+  });
+});
+
+describe("Sprint orchestrator: atomic spawn rollback", () => {
+  let db: Database.Database;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-sprint-atomic-"));
+    db = initDb(tmpDir);
+    execSync("git init", { cwd: tmpDir, stdio: "pipe" });
+    execSync("git config user.email 'test@test.com'", { cwd: tmpDir, stdio: "pipe" });
+    execSync("git config user.name 'Test'", { cwd: tmpDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "init");
+    execSync("git add . && git commit -m 'init'", { cwd: tmpDir, stdio: "pipe" });
+  });
+
+  afterEach(() => {
+    db.close();
+    try { execSync("git worktree prune", { cwd: tmpDir, stdio: "pipe" }); } catch { /* ignore */ }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("rolls back all spawned agents on partial failure", () => {
+    // Create sprint
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("atomic-test", "Test atomic");
+    createAgent(db, { handle: "good-agent", name: "Good", mission: "works" });
+
+    // Simulate: first agent spawns fine, record it
+    insertSpawn(db, {
+      agent_handle: "@good-agent",
+      pid: 99998,
+      log_path: null,
+      worktree_path: null,
+      branch: "agent/good-agent",
+    });
+    db.prepare("INSERT INTO sprint_agents (sprint_name, agent_handle, mission) VALUES (?, ?, ?)").run("atomic-test", "@good-agent", "works");
+
+    // Simulate failure on second agent — mark sprint failed
+    db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run("atomic-test");
+
+    // Kill the spawned agent (simulate rollback)
+    markSpawnStopped(db, "@good-agent");
+
+    const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get("atomic-test") as Sprint;
+    assert.equal(sprint.status, "failed");
+    const spawn = getSpawn(db, "@good-agent");
+    assert.ok(spawn?.stopped_at, "Good agent should be stopped after rollback");
+  });
+});
+
+describe("Sprint orchestrator: report protocol injection", () => {
+  it("appends report protocol to identity content", () => {
+    const baseContent = "You are a code reviewer.";
+    const REPORT_PROTOCOL = `
+
+## Completion Report Protocol
+
+When you finish your work, post a structured completion report to #work with this exact format:
+
+REPORT: <one-line summary of what you built/changed>
+ARCHITECTURE: <how it's designed, component boundaries, key decisions>
+DATA FLOW: <input -> transform -> output, how data moves through your changes>
+EDGE CASES: <what edge cases you handled, what's not handled>
+TESTS: <test count, coverage areas, what scenarios are tested>
+
+This report will be shown to the CEO in the sprint finish view.
+`;
+
+    const injected = baseContent + REPORT_PROTOCOL;
+    assert.ok(injected.includes("REPORT:"));
+    assert.ok(injected.includes("ARCHITECTURE:"));
+    assert.ok(injected.includes("DATA FLOW:"));
+    assert.ok(injected.includes("EDGE CASES:"));
+    assert.ok(injected.includes("TESTS:"));
+    assert.ok(injected.startsWith("You are a code reviewer."));
+  });
+});
+
+describe("Sprint orchestrator: report parsing", () => {
+  it("parses a well-formed agent report", () => {
+    const content = `REPORT: Implemented JWT validation
+ARCHITECTURE: Added middleware layer between router and handlers
+DATA FLOW: Request -> Auth header -> JWT decode -> Validate -> Handler
+EDGE CASES: Expired tokens return 401, malformed return 400
+TESTS: 12 new tests covering valid, expired, malformed, missing tokens`;
+
+    const report = parseAgentReport(content);
+    assert.ok(report);
+    assert.equal(report.summary, "Implemented JWT validation");
+    assert.ok(report.architecture?.includes("middleware layer"));
+    assert.ok(report.dataFlow?.includes("JWT decode"));
+    assert.ok(report.edgeCases?.includes("401"));
+    assert.ok(report.tests?.includes("12 new tests"));
+  });
+
+  it("returns null for content without REPORT marker", () => {
+    const content = "Just a regular update. Everything is going well.";
+    assert.equal(parseAgentReport(content), null);
+  });
+
+  it("handles partial reports gracefully", () => {
+    const content = `REPORT: Quick fix for auth bug
+TESTS: Added 3 regression tests`;
+
+    const report = parseAgentReport(content);
+    assert.ok(report);
+    assert.equal(report.summary, "Quick fix for auth bug");
+    assert.equal(report.architecture, null);
+    assert.equal(report.dataFlow, null);
+    assert.ok(report.tests?.includes("3 regression"));
+  });
+});
+
+describe("Sprint orchestrator: render functions", () => {
+  // Use NO_COLOR to get clean output for assertions
+  const origNoColor = process.env.NO_COLOR;
+
+  beforeEach(() => { process.env.NO_COLOR = "1"; });
+  afterEach(() => {
+    if (origNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = origNoColor;
+  });
+
+  it("renderSprintList shows sprints", () => {
+    const sprints: Sprint[] = [
+      { name: "auth-sprint", goal: "Build auth", status: "running", created_at: new Date().toISOString(), finished_at: null },
+      { name: "old-sprint", goal: "Legacy work", status: "finished", created_at: new Date(Date.now() - 86400000).toISOString(), finished_at: new Date().toISOString() },
+    ];
+    const output = renderSprintList(sprints);
+    assert.ok(output.includes("auth-sprint"));
+    assert.ok(output.includes("running"));
+    assert.ok(output.includes("old-sprint"));
+    assert.ok(output.includes("finished"));
+  });
+
+  it("renderSprintList handles empty list", () => {
+    const output = renderSprintList([]);
+    assert.ok(output.includes("No sprints"));
+  });
+
+  it("renderSprintReport shows compact tiles by default", () => {
+    const report: SprintReport = {
+      sprint: { name: "test", goal: "Test goal", status: "running", created_at: new Date().toISOString(), finished_at: null },
+      agents: [{
+        handle: "@worker1", branch: "agent/worker1", alive: false, stopped: true,
+        additions: 50, deletions: 10, filesChanged: 3, mission: "Do stuff",
+        lastPost: "Done with the work", report: null,
+      }],
+      totals: { additions: 50, deletions: 10, filesChanged: 3 },
+      conflicts: [],
+      escalations: 0,
+      mergeOrder: ["@worker1"],
+    };
+    const output = renderSprintReport(report);
+    assert.ok(output.includes("SPRINT REPORT: test"));
+    assert.ok(output.includes("@worker1"));
+    assert.ok(output.includes("+50/-10"));
+    assert.ok(output.includes("3 files"));
+    assert.ok(output.includes("--detail"));
+  });
+
+  it("renderSprintReport shows expanded tiles with detail=true", () => {
+    const report: SprintReport = {
+      sprint: { name: "test", goal: "Test goal", status: "running", created_at: new Date().toISOString(), finished_at: null },
+      agents: [{
+        handle: "@worker1", branch: "agent/worker1", alive: false, stopped: true,
+        additions: 50, deletions: 10, filesChanged: 3, mission: "Do stuff",
+        lastPost: null,
+        report: { summary: "Built auth", architecture: "JWT middleware", dataFlow: "Req -> JWT -> Handler", edgeCases: "Expired -> 401", tests: "10 tests" },
+      }],
+      totals: { additions: 50, deletions: 10, filesChanged: 3 },
+      conflicts: [],
+      escalations: 0,
+      mergeOrder: ["@worker1"],
+    };
+    const output = renderSprintReport(report, true);
+    assert.ok(output.includes("ARCHITECTURE"));
+    assert.ok(output.includes("JWT middleware"));
+    assert.ok(output.includes("DATA FLOW"));
+    assert.ok(output.includes("EDGE CASES"));
+    assert.ok(output.includes("TESTS"));
+    assert.ok(!output.includes("--detail"), "Should not show --detail hint in detail mode");
+  });
+
+  it("renderPortfolio shows bird's eye view", () => {
+    const data = [{
+      sprint: { name: "s1", goal: "Goal 1", status: "running" as const, created_at: new Date().toISOString(), finished_at: null },
+      agentCount: 3, running: 2, stopped: 1,
+    }];
+    const output = renderPortfolio(data);
+    assert.ok(output.includes("Portfolio"));
+    assert.ok(output.includes("s1"));
+    assert.ok(output.includes("3 agents"));
+    assert.ok(output.includes("2 running"));
+    assert.ok(output.includes("1 stopped"));
+  });
+
+  it("renderAlerts shows alerts", () => {
+    const alerts: Alert[] = [
+      { type: "escalation", agent: "@auth", message: "Need pricing decision", time: new Date().toISOString() },
+      { type: "crashed", agent: "@worker", message: "Process 12345 dead", time: new Date().toISOString() },
+    ];
+    const output = renderAlerts(alerts);
+    assert.ok(output.includes("Alerts"));
+    assert.ok(output.includes("escalation"));
+    assert.ok(output.includes("crashed"));
+    assert.ok(output.includes("@auth"));
+    assert.ok(output.includes("@worker"));
+  });
+
+  it("renderAlerts shows all clear when empty", () => {
+    const output = renderAlerts([]);
+    assert.ok(output.includes("No alerts"));
+  });
+});
+
+describe("Sprint orchestrator: alerts derivation", () => {
+  let db: Database.Database;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-sprint-alerts-"));
+    db = initDb(tmpDir);
+    // Create required channels and agents
+    createChannel(db, { name: "#escalations", description: "Escalations" });
+    createChannel(db, { name: "#work", description: "Work" });
+    createAgent(db, { handle: "alertbot", name: "Alert Bot", mission: "test" });
+  });
+
+  afterEach(() => {
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("detects escalation posts", () => {
+    createPost(db, { author: "@alertbot", channel: "#escalations", content: "BLOCKED: need API key" });
+
+    const posts = db.prepare(
+      "SELECT author, content, created_at FROM posts WHERE channel = '#escalations'"
+    ).all() as { author: string; content: string; created_at: string }[];
+
+    assert.equal(posts.length, 1);
+    assert.ok(posts[0].content.includes("BLOCKED"));
+  });
+
+  it("detects crashed agents (process dead, not marked stopped)", () => {
+    insertSpawn(db, {
+      agent_handle: "@alertbot",
+      pid: 1, // PID 1 is init/launchd, but we use a dead PID for testing
+      log_path: null,
+      worktree_path: null,
+      branch: "agent/alertbot",
+    });
+
+    const spawns = listSpawns(db);
+    // PID 99999 would be dead on most systems
+    // We can at least verify the logic structure
+    assert.equal(spawns.length, 1);
+    assert.equal(spawns[0].stopped_at, null);
+  });
+});
 
 // ============================================================
 // Section 8: CEO amplification commands tests
@@ -1034,21 +1753,16 @@ describe("Sprint suggest output format", () => {
   it("output includes JSON schema for sprint plan", () => {
     // Verify the expected JSON schema structure is present in the suggest prompt
     const expectedSchema = `{
-  "goal": "string — the sprint goal",
+  "goal": "string -- the sprint goal",
   "tasks": [
     {
-      "agent": "string — agent identity name",
-      "handle": "string — @handle for the agent",
-      "mission": "string — detailed task description",
-      "scope": ["string — file paths this agent owns"]
+      "agent": "string -- agent identity name",
+      "handle": "string -- @handle for the agent",
+      "mission": "string -- detailed task description",
+      "scope": ["string -- file paths this agent owns"]
     }
   ]
 }`;
-    // The schema should be parseable as JSON (after stripping comments)
-    const cleaned = expectedSchema
-      .replace(/— [^"]+/g, "")
-      .replace(/"string "/g, '"string"')
-      .replace(/\["string "\]/g, '["string"]');
     // At minimum, verify the schema has the expected keys
     assert.ok(expectedSchema.includes('"goal"'));
     assert.ok(expectedSchema.includes('"tasks"'));

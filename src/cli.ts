@@ -23,9 +23,14 @@ import {
   renderRoute,
   renderRouteList,
   renderOrg,
+  renderSprintReport,
+  renderSprintList,
+  renderPortfolio,
+  renderAlerts,
+  parseAgentReport,
   type SpawnInfo,
 } from "./render.js";
-import type { Agent, DagCommit, Post, RankedPost, Team, TeamMember, Route, SprintValidation, SprintBranch } from "./types.js";
+import type { Agent, DagCommit, Post, RankedPost, Team, TeamMember, Route, SprintValidation, SprintBranch, Sprint, SprintAgent, SprintReport, SprintAgentReport, Alert } from "./types.js";
 import type { BriefingSummary } from "./supervision.js";
 import type { PostThread } from "./posts.js";
 import type { DagSummary, PromoteResult } from "./gitdag.js";
@@ -113,6 +118,114 @@ async function api<T>(
 
   const data = (await res.json()) as T;
   return { ok: res.ok, status: res.status, data };
+}
+
+// === Pre-flight helper (shared by validate-sprint, merge-sprint, sprint finish) ===
+
+interface PreFlightResult {
+  allStopped: boolean;
+  running: { agent_handle: string; pid: number }[];
+  testsPass: boolean;
+  branches: SprintBranch[];
+  conflicts: string[];
+  mergeOrder: string[];
+}
+
+async function runPreFlight(
+  projectDir: string,
+  opts: { skipTests?: boolean; agentHandles?: string[] } = {}
+): Promise<PreFlightResult> {
+  const { listSpawns, isProcessAlive } = await import("./spawner.js");
+  const { getDb } = await import("./db.js");
+  const db = getDb(projectDir);
+
+  const allSpawns = listSpawns(db);
+  // If specific handles provided, filter to those; otherwise use all
+  const spawns = opts.agentHandles
+    ? allSpawns.filter((s) => opts.agentHandles!.includes(s.agent_handle))
+    : allSpawns;
+
+  db.close();
+
+  // 1. Check all agents stopped
+  const running = spawns.filter((s) => !s.stopped_at && isProcessAlive(s.pid));
+  const allStopped = running.length === 0;
+
+  // 2. Run tests (optional)
+  let testsPass = false;
+  if (!opts.skipTests) {
+    try {
+      execSync("npm test", { cwd: projectDir, stdio: "pipe" });
+      testsPass = true;
+    } catch {
+      testsPass = false;
+    }
+  }
+
+  // 3. Parse diff stats per branch
+  const branches: SprintBranch[] = [];
+  const filesByBranch = new Map<string, Set<string>>();
+
+  for (const s of spawns) {
+    if (!s.branch) continue;
+    try {
+      const numstat = execSync(`git diff --numstat main..${s.branch}`, {
+        cwd: projectDir,
+        encoding: "utf-8",
+        stdio: "pipe",
+      }).trim();
+
+      let filesChanged = 0;
+      let additions = 0;
+      let deletions = 0;
+      const files = new Set<string>();
+
+      if (numstat) {
+        for (const line of numstat.split("\n")) {
+          const parts = line.split("\t");
+          if (parts.length >= 3) {
+            additions += parseInt(parts[0], 10) || 0;
+            deletions += parseInt(parts[1], 10) || 0;
+            files.add(parts[2]);
+            filesChanged++;
+          }
+        }
+      }
+
+      filesByBranch.set(s.agent_handle, files);
+      branches.push({
+        agent_handle: s.agent_handle,
+        branch: s.branch,
+        filesChanged,
+        additions,
+        deletions,
+      });
+    } catch {
+      // Branch not found — skip
+    }
+  }
+
+  // 4. Detect conflicts
+  const fileCounts = new Map<string, string[]>();
+  for (const [handle, files] of filesByBranch) {
+    for (const file of files) {
+      if (!fileCounts.has(file)) fileCounts.set(file, []);
+      fileCounts.get(file)!.push(handle);
+    }
+  }
+  const conflicts: string[] = [];
+  for (const [file, agents] of fileCounts) {
+    if (agents.length > 1) {
+      conflicts.push(`${file} (${agents.join(", ")})`);
+    }
+  }
+
+  // 5. Merge order: fewest files first
+  const mergeOrder = [...branches]
+    .sort((a, b) => a.filesChanged - b.filesChanged)
+    .map((b) => b.agent_handle);
+
+  return { allStopped, running, testsPass, branches, conflicts, mergeOrder };
 }
 
 // === CLI ===
@@ -1191,133 +1304,271 @@ program
   .command("validate-sprint")
   .description("Validate sprint: check agents stopped, run tests, detect conflicts")
   .action(async () => {
-    const { listSpawns, isProcessAlive } = await import("./spawner.js");
-    const { getDb } = await import("./db.js");
-    const db = getDb();
+    console.log("Running pre-flight checks...\n");
+    const pf = await runPreFlight(process.cwd());
 
-    const spawns = listSpawns(db);
-    db.close();
-
-    // 1. Check all spawned agents are stopped
-    const allStopped = spawns.every((s) => s.stopped_at !== null || !isProcessAlive(s.pid));
-    if (!allStopped) {
-      const running = spawns.filter((s) => !s.stopped_at && isProcessAlive(s.pid));
-      console.log(`⚠ Running agents: ${running.map((s) => s.agent_handle).join(", ")}`);
+    if (!pf.allStopped) {
+      console.log(`\u26a0 Running agents: ${pf.running.map((s) => s.agent_handle).join(", ")}`);
     } else {
       console.log("All agents stopped.");
     }
 
-    // 2. Run npm test
-    let testsPass = false;
-    console.log("\nRunning tests...");
-    try {
-      execSync("npm test", { cwd: process.cwd(), stdio: "inherit" });
-      testsPass = true;
-      console.log("Tests passed.");
-    } catch {
-      console.log("Tests failed.");
+    console.log(pf.testsPass ? "Tests passed." : "Tests failed.");
+
+    for (const b of pf.branches) {
+      console.log(`\n--- ${b.agent_handle} (${b.branch}) ---`);
+      console.log(`  +${b.additions} -${b.deletions} (${b.filesChanged} files)`);
     }
 
-    // 3. Show git diff --stat for each agent branch and collect file changes
-    const branches: SprintBranch[] = [];
-    const filesByBranch = new Map<string, Set<string>>();
-
-    for (const s of spawns) {
-      if (!s.branch) continue;
-      try {
-        const stat = execSync(`git diff --stat main..${s.branch}`, {
-          cwd: process.cwd(),
-          encoding: "utf-8",
-          stdio: "pipe",
-        });
-        console.log(`\n--- ${s.agent_handle} (${s.branch}) ---`);
-        console.log(stat || "(no changes)");
-
-        // Parse numstat for structured data
-        const numstat = execSync(`git diff --numstat main..${s.branch}`, {
-          cwd: process.cwd(),
-          encoding: "utf-8",
-          stdio: "pipe",
-        }).trim();
-
-        let filesChanged = 0;
-        let additions = 0;
-        let deletions = 0;
-        const files = new Set<string>();
-
-        if (numstat) {
-          for (const line of numstat.split("\n")) {
-            const parts = line.split("\t");
-            if (parts.length >= 3) {
-              additions += parseInt(parts[0], 10) || 0;
-              deletions += parseInt(parts[1], 10) || 0;
-              files.add(parts[2]);
-              filesChanged++;
-            }
-          }
-        }
-
-        filesByBranch.set(s.agent_handle, files);
-        branches.push({
-          agent_handle: s.agent_handle,
-          branch: s.branch,
-          filesChanged,
-          additions,
-          deletions,
-        });
-      } catch {
-        console.log(`\n--- ${s.agent_handle} (${s.branch}) --- (branch not found)`);
-      }
-    }
-
-    // 4. Detect file conflicts (files changed by multiple branches)
-    const fileCounts = new Map<string, string[]>();
-    for (const [handle, files] of filesByBranch) {
-      for (const file of files) {
-        if (!fileCounts.has(file)) fileCounts.set(file, []);
-        fileCounts.get(file)!.push(handle);
-      }
-    }
-    const conflicts: string[] = [];
-    for (const [file, agents] of fileCounts) {
-      if (agents.length > 1) {
-        conflicts.push(`${file} (${agents.join(", ")})`);
-      }
-    }
-
-    if (conflicts.length > 0) {
+    if (pf.conflicts.length > 0) {
       console.log("\nConflicts detected:");
-      for (const c of conflicts) {
+      for (const c of pf.conflicts) {
         console.log(`  - ${c}`);
       }
     } else {
       console.log("\nNo file conflicts detected.");
     }
 
-    // 5. Suggest merge order: fewest files first (less likely to conflict)
-    const suggestedOrder = [...branches]
-      .sort((a, b) => a.filesChanged - b.filesChanged)
-      .map((b) => b.agent_handle);
-
-    if (suggestedOrder.length > 0) {
+    if (pf.mergeOrder.length > 0) {
       console.log("\nSuggested merge order:");
-      suggestedOrder.forEach((h, i) => console.log(`  ${i + 1}. ${h}`));
+      pf.mergeOrder.forEach((h, i) => console.log(`  ${i + 1}. ${h}`));
     }
 
     const validation: SprintValidation = {
-      allStopped,
-      testsPass,
-      branches,
-      conflicts: conflicts.map((c) => c.split(" (")[0]), // just file names
-      suggestedOrder,
+      allStopped: pf.allStopped,
+      testsPass: pf.testsPass,
+      branches: pf.branches,
+      conflicts: pf.conflicts.map((c) => c.split(" (")[0]),
+      suggestedOrder: pf.mergeOrder,
     };
 
-    // Output JSON for programmatic use
     console.log("\n" + JSON.stringify(validation, null, 2));
   });
 
+// --- board merge-sprint ---
+program
+  .command("merge-sprint")
+  .description("Merge all agent branches into main sequentially, testing after each merge")
+  .option("--dry-run", "Run pre-flight checks and print merge order without merging")
+  .option("--order <handles>", "Comma-separated agent handles to override merge order")
+  .action(async (opts: { dryRun?: boolean; order?: string }) => {
+    const projectDir = process.cwd();
+    const pf = await runPreFlight(projectDir);
+
+    if (!pf.allStopped) {
+      console.error(`Pre-flight failed: running agents: ${pf.running.map((s) => s.agent_handle).join(", ")}`);
+      console.error("Stop all agents before merging.");
+      process.exit(1);
+    }
+    console.log("Pre-flight: all agents stopped.");
+
+    if (!pf.testsPass) {
+      console.error("Pre-flight failed: tests do not pass on main.");
+      process.exit(1);
+    }
+    console.log("Pre-flight: tests pass.");
+
+    // Determine merge order
+    let mergeOrder: string[];
+    if (opts.order) {
+      mergeOrder = opts.order.split(",").map((h) => h.trim().startsWith("@") ? h.trim() : `@${h.trim()}`);
+    } else {
+      mergeOrder = pf.mergeOrder;
+    }
+
+    if (mergeOrder.length === 0) {
+      console.log("No agent branches to merge. Nothing to do.");
+      return;
+    }
+
+    console.log(`\nMerge order (${mergeOrder.length} branches):`);
+    mergeOrder.forEach((h, i) => {
+      const info = pf.branches.find((b) => b.agent_handle === h);
+      console.log(`  ${i + 1}. ${h}${info ? ` (${info.filesChanged} files)` : ""}`);
+    });
+
+    if (opts.dryRun) {
+      console.log("\nDry run — no merges performed.");
+      return;
+    }
+
+    // === Merge each branch ===
+    const { mergeAgent } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+    const merged: string[] = [];
+
+    for (const handle of mergeOrder) {
+      console.log(`\nMerging ${handle}...`);
+      try {
+        const result = mergeAgent(db, handle, projectDir);
+        console.log(`  Merged ${result.branch} (${result.mergedCommits} commits)`);
+      } catch (err: any) {
+        console.error(`  Merge failed for ${handle}: ${err.message}`);
+        db.close();
+        process.exit(1);
+      }
+
+      // Run tests after merge
+      try {
+        execSync("npm test", { cwd: projectDir, stdio: "pipe" });
+        console.log(`  Tests pass after merging ${handle}.`);
+        merged.push(handle);
+      } catch {
+        console.error(`  Tests FAILED after merging ${handle}. Reverting...`);
+        execSync("git reset --hard HEAD~1", { cwd: projectDir, stdio: "pipe" });
+        console.error(`  Reverted merge of ${handle}. Stopping.`);
+        db.close();
+        process.exit(1);
+      }
+    }
+
+    // === Post summary to #status ===
+    console.log(`\nAll ${merged.length} merges succeeded!`);
+    try {
+      const rc = requireRC();
+      const summary = `Sprint merge complete: ${merged.join(", ")} merged successfully.`;
+      await api(rc, "POST", "/api/posts", {
+        content: summary,
+        channel: "#status",
+      });
+      console.log("Summary posted to #status.");
+    } catch {
+      console.log("(Could not post summary to #status)");
+    }
+
+    db.close();
+  });
+
+// === Sprint report protocol — injected into identity for sprint agents ===
+
+const SPRINT_REPORT_PROTOCOL = `
+
+## Completion Report Protocol
+
+When you finish your work, post a structured completion report to #work with this exact format:
+
+REPORT: <one-line summary of what you built/changed>
+ARCHITECTURE: <how it's designed, component boundaries, key decisions>
+DATA FLOW: <input → transform → output, how data moves through your changes>
+EDGE CASES: <what edge cases you handled, what's not handled>
+TESTS: <test count, coverage areas, what scenarios are tested>
+
+This report will be shown to the CEO in the sprint finish view.
+`;
+
+// === Sprint helper: build report for a sprint ===
+
+async function buildSprintReport(
+  sprintName: string,
+  projectDir: string,
+  detail = false,
+): Promise<SprintReport> {
+  const { getDb } = await import("./db.js");
+  const { listSpawns, isProcessAlive } = await import("./spawner.js");
+  const db = getDb(projectDir);
+
+  // Get sprint
+  const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as Sprint | undefined;
+  if (!sprint) {
+    db.close();
+    throw new Error(`Sprint not found: ${sprintName}`);
+  }
+
+  // Get sprint agents
+  const sprintAgents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(sprintName) as SprintAgent[];
+  const spawns = listSpawns(db);
+
+  // Get escalation count since sprint started
+  const escalationCount = (db.prepare(
+    "SELECT COUNT(*) as count FROM posts WHERE channel = '#escalations' AND created_at >= ?"
+  ).get(sprint.created_at) as { count: number }).count;
+
+  // Build per-agent reports
+  const agentReports: SprintAgentReport[] = [];
+  let totalAdditions = 0;
+  let totalDeletions = 0;
+  let totalFiles = 0;
+
+  for (const sa of sprintAgents) {
+    const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
+    const alive = spawn && !spawn.stopped_at ? isProcessAlive(spawn.pid) : false;
+    const stopped = spawn ? !!spawn.stopped_at || !alive : true;
+
+    // Get last post
+    const lastPost = db.prepare(
+      "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 1"
+    ).get(sa.agent_handle) as { content: string } | undefined;
+
+    // Try to find a structured report in recent posts
+    let parsedReport = null;
+    if (lastPost) {
+      // Search recent posts for REPORT: marker
+      const recentPosts = db.prepare(
+        "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 10"
+      ).all(sa.agent_handle) as { content: string }[];
+      for (const p of recentPosts) {
+        parsedReport = parseAgentReport(p.content);
+        if (parsedReport) break;
+      }
+    }
+
+    // Get diff stats
+    let additions = 0, deletions = 0, filesChanged = 0;
+    if (spawn?.branch) {
+      try {
+        const numstat = execSync(`git diff --numstat main..${spawn.branch}`, {
+          cwd: projectDir, encoding: "utf-8", stdio: "pipe",
+        }).trim();
+        if (numstat) {
+          for (const line of numstat.split("\n")) {
+            const parts = line.split("\t");
+            if (parts.length >= 3) {
+              additions += parseInt(parts[0], 10) || 0;
+              deletions += parseInt(parts[1], 10) || 0;
+              filesChanged++;
+            }
+          }
+        }
+      } catch { /* branch not found */ }
+    }
+
+    totalAdditions += additions;
+    totalDeletions += deletions;
+    totalFiles += filesChanged;
+
+    agentReports.push({
+      handle: sa.agent_handle,
+      branch: spawn?.branch || null,
+      alive,
+      stopped,
+      additions,
+      deletions,
+      filesChanged,
+      mission: sa.mission,
+      lastPost: lastPost?.content || null,
+      report: parsedReport,
+    });
+  }
+
+  db.close();
+
+  // Get merge order + conflicts from pre-flight (skip tests for speed)
+  const handles = sprintAgents.map((sa) => sa.agent_handle);
+  const pf = await runPreFlight(projectDir, { skipTests: true, agentHandles: handles });
+
+  return {
+    sprint,
+    agents: agentReports,
+    totals: { additions: totalAdditions, deletions: totalDeletions, filesChanged: totalFiles },
+    conflicts: pf.conflicts,
+    escalations: escalationCount,
+    mergeOrder: pf.mergeOrder,
+  };
+}
+
 // --- board sprint ---
-const sprint = program.command("sprint").description("Sprint planning and execution");
+const sprint = program.command("sprint").description("Sprint orchestrator — manage parallel agent work");
 
 sprint
   .command("suggest <goal>")
@@ -1388,97 +1639,354 @@ Respond with the following JSON schema:
 
 sprint
   .command("start")
-  .description("Start a sprint from a plan file, spawning agents with disjoint scopes")
-  .requiredOption("--plan <path>", "Path to JSON sprint plan file")
-  .action(async (opts: { plan: string }) => {
+  .description("Start a new sprint with multiple agents")
+  .requiredOption("--name <name>", "Sprint name (slug)")
+  .requiredOption("--goal <goal>", "Sprint goal description")
+  .option("--plan <path>", "Path to JSON sprint plan file (simple mode)")
+  .option("--agents <specs>", "Agent specs as JSON array: [{\"handle\":\"@x\",\"identity\":\"researcher\",\"mission\":\"...\"}]")
+  .option("--yaml <path>", "Path to YAML sprint definition file")
+  .action(async (opts: { name: string; goal: string; plan?: string; agents?: string; yaml?: string }) => {
     const rc = requireRC();
-    const planPath = path.resolve(opts.plan);
-
-    if (!fs.existsSync(planPath)) {
-      console.error(`Plan file not found: ${planPath}`);
-      process.exit(1);
-    }
-
-    let plan: { goal: string; tasks: { agent: string; handle: string; mission: string; scope: string[] }[] };
-    try {
-      plan = JSON.parse(fs.readFileSync(planPath, "utf-8"));
-    } catch (err: any) {
-      console.error(`Invalid JSON in plan file: ${err.message}`);
-      process.exit(1);
-    }
-
-    if (!plan.tasks || !Array.isArray(plan.tasks)) {
-      console.error("Plan must contain a 'tasks' array.");
-      process.exit(1);
-    }
-
-    // Validate scopes are disjoint
-    const fileOwners = new Map<string, string>();
-    const overlaps: string[] = [];
-    for (const task of plan.tasks) {
-      for (const file of task.scope ?? []) {
-        const existing = fileOwners.get(file);
-        if (existing) {
-          overlaps.push(`${file} claimed by both ${existing} and ${task.handle}`);
-        } else {
-          fileOwners.set(file, task.handle);
-        }
-      }
-    }
-
-    if (overlaps.length > 0) {
-      console.error("Scope overlap detected — aborting:");
-      for (const o of overlaps) {
-        console.error(`  - ${o}`);
-      }
-      process.exit(1);
-    }
-
-    console.log(`Starting sprint: ${plan.goal}`);
-    console.log(`Tasks: ${plan.tasks.length}, scopes disjoint ✓\n`);
-
-    const { spawnAgent } = await import("./spawner.js");
     const { getDb } = await import("./db.js");
+    const { spawnAgent, killAgent } = await import("./spawner.js");
+    const { createAgent, getAgent } = await import("./agents.js");
+    const { generateKey, storeKey } = await import("./auth.js");
+    const { loadIdentity } = await import("./identities.js");
     const db = getDb();
 
-    for (const task of plan.tasks) {
-      const handle = task.handle.startsWith("@") ? task.handle.slice(1) : task.handle;
+    // Check sprint name doesn't already exist
+    const existing = db.prepare("SELECT name FROM sprints WHERE name = ?").get(opts.name);
+    if (existing) {
+      console.error(`Sprint "${opts.name}" already exists. Choose a different name.`);
+      db.close();
+      process.exit(1);
+    }
 
-      // Create agent via API
-      const res = await api<any>(rc, "POST", "/api/agents", {
-        handle,
-        name: task.agent,
-        mission: task.mission,
+    // Parse agent specs — support --plan (simple mode) or --agents/--yaml (full mode)
+    interface AgentSpec { handle: string; identity?: string; mission: string; scope?: string[] }
+    let agentSpecs: AgentSpec[] = [];
+
+    if (opts.plan) {
+      // Simple plan mode: read JSON plan file with tasks array
+      const planPath = path.resolve(opts.plan);
+      if (!fs.existsSync(planPath)) {
+        console.error(`Plan file not found: ${planPath}`);
+        db.close();
+        process.exit(1);
+      }
+
+      let plan: { goal: string; tasks: { agent: string; handle: string; mission: string; scope: string[] }[] };
+      try {
+        plan = JSON.parse(fs.readFileSync(planPath, "utf-8"));
+      } catch (err: any) {
+        console.error(`Invalid JSON in plan file: ${err.message}`);
+        db.close();
+        process.exit(1);
+      }
+
+      if (!plan.tasks || !Array.isArray(plan.tasks)) {
+        console.error("Plan must contain a 'tasks' array.");
+        db.close();
+        process.exit(1);
+      }
+
+      // Validate scopes are disjoint
+      const fileOwners = new Map<string, string>();
+      const overlaps: string[] = [];
+      for (const task of plan.tasks) {
+        for (const file of task.scope ?? []) {
+          const existingOwner = fileOwners.get(file);
+          if (existingOwner) {
+            overlaps.push(`${file} claimed by both ${existingOwner} and ${task.handle}`);
+          } else {
+            fileOwners.set(file, task.handle);
+          }
+        }
+      }
+
+      if (overlaps.length > 0) {
+        console.error("Scope overlap detected — aborting:");
+        for (const o of overlaps) {
+          console.error(`  - ${o}`);
+        }
+        db.close();
+        process.exit(1);
+      }
+
+      agentSpecs = plan.tasks.map((t) => ({
+        handle: t.handle,
+        identity: t.agent,
+        mission: t.mission,
+        scope: t.scope,
+      }));
+    } else if (opts.yaml) {
+      // Simple YAML-like parsing: read file, parse as JSON (YAML support can come later)
+      const content = fs.readFileSync(opts.yaml, "utf-8");
+      try {
+        const parsed = JSON.parse(content);
+        agentSpecs = parsed.agents || [];
+        // Allow YAML to override name/goal
+        if (!opts.name && parsed.name) opts.name = parsed.name;
+        if (!opts.goal && parsed.goal) opts.goal = parsed.goal;
+      } catch {
+        console.error(`Failed to parse sprint file: ${opts.yaml}`);
+        db.close();
+        process.exit(1);
+      }
+    } else if (opts.agents) {
+      try {
+        agentSpecs = JSON.parse(opts.agents);
+      } catch {
+        console.error("Invalid --agents JSON. Expected: [{\"handle\":\"@x\",\"mission\":\"...\"}]");
+        db.close();
+        process.exit(1);
+      }
+    } else {
+      console.error("Provide --plan, --agents, or --yaml to define sprint agents.");
+      db.close();
+      process.exit(1);
+    }
+
+    if (agentSpecs.length === 0) {
+      console.error("No agents defined for this sprint.");
+      db.close();
+      process.exit(1);
+    }
+
+    // Create sprint record
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run(opts.name, opts.goal);
+
+    console.log(`Starting sprint: ${opts.goal}`);
+    console.log(`Tasks: ${agentSpecs.length}\n`);
+
+    // Spawn agents atomically
+    const spawned: string[] = [];
+    const projectDir = process.cwd();
+
+    for (const spec of agentSpecs) {
+      const handle = spec.handle.startsWith("@") ? spec.handle : `@${spec.handle}`;
+
+      try {
+        // Create agent if doesn't exist
+        if (!getAgent(db, handle)) {
+          createAgent(db, {
+            handle: handle.slice(1),
+            name: handle.slice(1),
+            role: "worker",
+            mission: spec.mission,
+          });
+        }
+
+        // Build mission with scope if provided
+        let mission = spec.mission;
+        if (spec.scope && spec.scope.length > 0) {
+          mission += `\n\nYour scope (files you own):\n${spec.scope.map((f) => `- ${f}`).join("\n")}`;
+        }
+
+        // Load and inject identity with report protocol
+        let identity = undefined;
+        if (spec.identity) {
+          try {
+            identity = loadIdentity(spec.identity, projectDir);
+            // Inject sprint report protocol
+            identity = { ...identity, content: identity.content + SPRINT_REPORT_PROTOCOL };
+          } catch {
+            // Try loading identity from identities/ folder directly
+            const identityPath = path.join(projectDir, "identities", `${spec.identity}.md`);
+            if (fs.existsSync(identityPath)) {
+              const identityContent = fs.readFileSync(identityPath, "utf-8");
+              mission = `[Identity: ${spec.identity}]\n${identityContent}\n\n${mission}`;
+            } else {
+              throw new Error(`Identity not found: ${spec.identity}`);
+            }
+          }
+        }
+
+        const apiKey = generateKey();
+        storeKey(db, apiKey, handle);
+
+        const result = spawnAgent(db, {
+          handle,
+          mission,
+          apiKey,
+          serverUrl: rc.url,
+          projectDir,
+          identity,
+        });
+
+        // Record in sprint_agents
+        db.prepare(
+          "INSERT INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)"
+        ).run(opts.name, handle, spec.identity || null, spec.mission);
+
+        spawned.push(handle);
+        console.log(`  Spawned ${handle} (PID ${result.pid}, branch: ${result.branch})`);
+      } catch (err: any) {
+        // Atomic rollback — kill all already-spawned agents
+        console.error(`\nFailed to spawn ${handle}: ${err.message}`);
+        console.error("Rolling back — killing all spawned agents...");
+        for (const h of spawned) {
+          try {
+            killAgent(db, h, projectDir);
+            console.error(`  Killed ${h}`);
+          } catch { /* best effort */ }
+        }
+        // Mark sprint as failed
+        db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(opts.name);
+        db.close();
+        process.exit(1);
+      }
+    }
+
+    console.log(`\nSprint "${opts.name}" started with ${spawned.length} agents.`);
+    console.log(`  board sprint status ${opts.name}  — check progress`);
+    console.log(`  board sprint finish ${opts.name}  — finish and merge`);
+    console.log(`  board alerts                      — check for issues`);
+    db.close();
+  });
+
+sprint
+  .command("list")
+  .description("List all sprints")
+  .action(async () => {
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+    const sprints = db.prepare("SELECT * FROM sprints ORDER BY created_at DESC").all() as Sprint[];
+    console.log(renderSprintList(sprints));
+    db.close();
+  });
+
+sprint
+  .command("status <name>")
+  .description("Show sprint status with agent tiles")
+  .option("--detail", "Show expanded tiles with full reports")
+  .action(async (name: string, opts: { detail?: boolean }) => {
+    try {
+      const report = await buildSprintReport(name, process.cwd());
+      console.log(renderSprintReport(report, opts.detail));
+    } catch (err: any) {
+      console.error(err.message);
+      process.exit(1);
+    }
+  });
+
+sprint
+  .command("finish <name>")
+  .description("Show CEO report and merge sprint branches")
+  .option("--detail", "Show expanded tiles with full reports")
+  .option("--yes", "Skip merge confirmation prompt")
+  .option("--order <handles>", "Comma-separated agent handles to override merge order")
+  .action(async (name: string, opts: { detail?: boolean; yes?: boolean; order?: string }) => {
+    const projectDir = process.cwd();
+
+    // Build and show the CEO report
+    let report: SprintReport;
+    try {
+      report = await buildSprintReport(name, projectDir);
+    } catch (err: any) {
+      console.error(err.message);
+      process.exit(1);
+    }
+
+    console.log(renderSprintReport(report, opts.detail));
+
+    // Check all agents stopped
+    const stillRunning = report.agents.filter((a) => a.alive && !a.stopped);
+    if (stillRunning.length > 0) {
+      console.error(`\nCannot finish: ${stillRunning.map((a) => a.handle).join(", ")} still running.`);
+      console.error("Stop all agents first, then run sprint finish again.");
+      process.exit(1);
+    }
+
+    // Run tests on main
+    console.log("\nRunning tests on main...");
+    try {
+      execSync("npm test", { cwd: projectDir, stdio: "pipe" });
+      console.log("Tests pass on main.");
+    } catch {
+      console.error("Tests fail on main. Fix before merging.");
+      process.exit(1);
+    }
+
+    // Determine merge order
+    let mergeOrder: string[];
+    if (opts.order) {
+      mergeOrder = opts.order.split(",").map((h) => h.trim().startsWith("@") ? h.trim() : `@${h.trim()}`);
+    } else {
+      mergeOrder = report.mergeOrder;
+    }
+
+    if (mergeOrder.length === 0) {
+      console.log("\nNo branches to merge.");
+      // Mark sprint as finished
+      const { getDb } = await import("./db.js");
+      const db = getDb();
+      db.prepare("UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
+      db.close();
+      return;
+    }
+
+    // Confirm merge
+    if (!opts.yes) {
+      const readline = await import("readline");
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise<string>((resolve) => {
+        rl.question(`\nMerge all ${mergeOrder.length} branches? [y/N] `, resolve);
       });
-      if (!res.ok) {
-        console.error(`Error creating ${handle}: ${(res.data as any).error}`);
-        continue;
+      rl.close();
+      if (answer.toLowerCase() !== "y") {
+        console.log("Merge cancelled.");
+        return;
       }
+    }
 
-      // Read identity if available
-      let mission = task.mission;
-      if (task.scope && task.scope.length > 0) {
-        mission += `\n\nYour scope (files you own):\n${task.scope.map((f) => `- ${f}`).join("\n")}`;
-      }
+    // Sequential merge with test gates
+    const { mergeAgent } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+    const merged: string[] = [];
 
-      const identityPath = path.join(process.cwd(), "identities", `${task.agent}.md`);
-      if (fs.existsSync(identityPath)) {
-        const identityContent = fs.readFileSync(identityPath, "utf-8");
-        mission = `[Identity: ${task.agent}]\n${identityContent}\n\n${mission}`;
+    for (const handle of mergeOrder) {
+      console.log(`\nMerging ${handle}...`);
+      try {
+        const result = mergeAgent(db, handle, projectDir);
+        console.log(`  Merged ${result.branch} (${result.mergedCommits} commits)`);
+      } catch (err: any) {
+        console.error(`  Merge failed for ${handle}: ${err.message}`);
+        db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
+        db.close();
+        process.exit(1);
       }
 
       try {
-        const result = spawnAgent(db, {
-          handle: res.data.handle,
-          mission,
-          apiKey: res.data.api_key,
-          serverUrl: rc.url,
-          projectDir: process.cwd(),
-        });
-        console.log(`Spawned ${res.data.handle} (PID ${result.pid}) → ${result.branch}`);
-      } catch (err: any) {
-        console.error(`Spawn failed for ${handle}: ${err.message}`);
+        execSync("npm test", { cwd: projectDir, stdio: "pipe" });
+        console.log(`  Tests pass after merging ${handle}.`);
+        merged.push(handle);
+      } catch {
+        console.error(`  Tests FAILED after merging ${handle}. Reverting...`);
+        execSync("git reset --hard HEAD~1", { cwd: projectDir, stdio: "pipe" });
+        console.error(`  Reverted merge of ${handle}. Stopping.`);
+        db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
+        db.close();
+        process.exit(1);
       }
+    }
+
+    // Mark sprint finished
+    db.prepare("UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
+
+    console.log(`\nSprint "${name}" complete! ${merged.length} branches merged.`);
+
+    // Post summary
+    try {
+      const rc = requireRC();
+      await api(rc, "POST", "/api/posts", {
+        content: `Sprint "${name}" finished. Merged: ${merged.join(", ")}.`,
+        channel: "#status",
+      });
+      console.log("Summary posted to #status.");
+    } catch {
+      console.log("(Could not post summary to #status)");
     }
 
     db.close();
@@ -1536,6 +2044,99 @@ program
     }
   });
 
+// --- board portfolio ---
+program
+  .command("portfolio")
+  .description("Bird's-eye view of all sprints")
+  .action(async () => {
+    const { getDb } = await import("./db.js");
+    const { listSpawns, isProcessAlive } = await import("./spawner.js");
+    const db = getDb();
+
+    const sprints = db.prepare("SELECT * FROM sprints ORDER BY created_at DESC").all() as Sprint[];
+    const spawns = listSpawns(db);
+
+    const portfolioData = sprints.map((s) => {
+      const agents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(s.name) as SprintAgent[];
+      let running = 0;
+      let stopped = 0;
+      for (const a of agents) {
+        const spawn = spawns.find((sp) => sp.agent_handle === a.agent_handle);
+        if (spawn && !spawn.stopped_at && isProcessAlive(spawn.pid)) {
+          running++;
+        } else {
+          stopped++;
+        }
+      }
+      return { sprint: s, agentCount: agents.length, running, stopped };
+    });
+
+    console.log(renderPortfolio(portfolioData));
+    db.close();
+  });
+
+// --- board alerts ---
+program
+  .command("alerts")
+  .description("Show alerts derived from escalations, crashes, and stale agents")
+  .action(async () => {
+    const { getDb } = await import("./db.js");
+    const { listSpawns, isProcessAlive } = await import("./spawner.js");
+    const db = getDb();
+
+    const alerts: Alert[] = [];
+
+    // 1. Escalation posts (last 24h)
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const escalations = db.prepare(
+      "SELECT author, content, created_at FROM posts WHERE channel = '#escalations' AND created_at >= ? ORDER BY created_at DESC"
+    ).all(oneDayAgo) as { author: string; content: string; created_at: string }[];
+
+    for (const e of escalations) {
+      alerts.push({
+        type: "escalation",
+        agent: e.author,
+        message: e.content.length > 100 ? e.content.slice(0, 97) + "..." : e.content,
+        time: e.created_at,
+      });
+    }
+
+    // 2. Crashed agents (not stopped but process dead)
+    const spawns = listSpawns(db);
+    for (const s of spawns) {
+      if (s.stopped_at) continue;
+      if (!isProcessAlive(s.pid)) {
+        alerts.push({
+          type: "crashed",
+          agent: s.agent_handle,
+          message: `Process ${s.pid} is dead (started ${s.started_at})`,
+          time: s.started_at,
+        });
+      }
+    }
+
+    // 3. Stale agents (running but no post in last 30 minutes)
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    for (const s of spawns) {
+      if (s.stopped_at || !isProcessAlive(s.pid)) continue;
+      const recentPost = db.prepare(
+        "SELECT created_at FROM posts WHERE author = ? AND created_at >= ? LIMIT 1"
+      ).get(s.agent_handle, thirtyMinAgo) as { created_at: string } | undefined;
+
+      if (!recentPost) {
+        alerts.push({
+          type: "stale",
+          agent: s.agent_handle,
+          message: "Running but no posts in 30+ minutes",
+          time: s.started_at,
+        });
+      }
+    }
+
+    console.log(renderAlerts(alerts));
+    db.close();
+  });
+
 // --- board identity ---
 const identity = program.command("identity").description("Manage agent identities");
 
@@ -1569,6 +2170,368 @@ identity
       process.exit(1);
     }
     console.log(fs.readFileSync(identityPath, "utf-8"));
+  });
+
+// --- board research ---
+
+interface MetricPreset {
+  description: string;
+  eval: string;
+  metric: string;
+  direction: "higher" | "lower";
+  guard: string;
+}
+
+const METRIC_PRESETS: Record<string, MetricPreset> = {
+  tests: {
+    description: "Maximize test count with zero failures",
+    eval: "npm test",
+    metric: "grep '^ℹ tests' eval.log | awk '{print $3}'",
+    direction: "higher",
+    guard: "grep '^ℹ fail' eval.log | awk '{print $3}' | xargs test 0 -eq",
+  },
+  lean: {
+    description: "Minimize source lines of code (tests must pass)",
+    eval: "find src -name '*.ts' ! -name '*.test.ts' | xargs wc -l",
+    metric: "tail -1 eval.log | awk '{print $1}'",
+    direction: "lower",
+    guard: "npm test > /dev/null 2>&1",
+  },
+  coverage: {
+    description: "Maximize test coverage percentage",
+    eval: "npx c8 --reporter=text npm test",
+    metric: "grep 'All files' eval.log | awk '{print $4}' | tr -d '%'",
+    direction: "higher",
+    guard: "grep '^ℹ fail' eval.log | awk '{print $3}' | xargs test 0 -eq",
+  },
+  speed: {
+    description: "Minimize test duration (tests must pass)",
+    eval: "npm test",
+    metric: "grep '^ℹ duration_ms' eval.log | awk '{print $3}'",
+    direction: "lower",
+    guard: "grep '^ℹ fail' eval.log | awk '{print $3}' | xargs test 0 -eq",
+  },
+  security: {
+    description: "Minimize security issues found by grep audit",
+    eval: "grep -rn 'eval(\\|exec(\\|execSync(\\|innerHTML\\|dangerouslySetInnerHTML\\|__proto__\\|constructor.prototype' src/ --include='*.ts' || true",
+    metric: "wc -l < eval.log | tr -d ' '",
+    direction: "lower",
+    guard: "npm test > /dev/null 2>&1",
+  },
+};
+
+const research = program.command("research").description("Auto-research: self-improving background agent");
+
+research
+  .command("start")
+  .description("Start the auto-research agent (Karpathy-style self-improving loop)")
+  .option("--tag <tag>", "Run tag for this session (e.g. 'mar13-security'). Creates branch agent/researcher-<tag>")
+  .option("--preset <name>", "Use a metric preset: tests, lean, coverage, speed, security")
+  .option("--focus <topic>", "Focus the researcher on a specific area (e.g. 'security', 'test coverage')")
+  .option("--scope <files>", "Comma-separated list of in-scope files (e.g. 'src/server.ts,src/routes.ts')")
+  .option("--eval <command>", "Eval command (overrides preset)")
+  .option("--metric <command>", "Shell command to extract metric from eval.log (overrides preset)")
+  .option("--direction <dir>", "Optimize direction: 'higher' or 'lower' (overrides preset)")
+  .option("--guard <command>", "Guard command that must exit 0 for KEEP (overrides preset)")
+  .option("--foreground", "Run in foreground instead of background")
+  .action(async (opts: { tag?: string; preset?: string; focus?: string; scope?: string; eval?: string; metric?: string; direction?: string; guard?: string; foreground?: boolean }) => {
+    const { initDb } = await import("./db.js");
+    const { loadIdentity } = await import("./identities.js");
+    const { createAgent, getAgent } = await import("./agents.js");
+    const { generateKey, storeKey } = await import("./auth.js");
+    const { spawnAgent, respawnAgent, getSpawn, isProcessAlive } = await import("./spawner.js");
+
+    const rc = readBoardRC();
+    if (!rc) {
+      console.error("No .boardrc found. Run `board init` first.");
+      process.exit(1);
+    }
+
+    // Resolve preset → defaults → explicit overrides
+    const presetName = opts.preset || "tests";
+    const preset = METRIC_PRESETS[presetName];
+    if (opts.preset && !preset) {
+      console.error(`Unknown preset: ${opts.preset}. Available: ${Object.keys(METRIC_PRESETS).join(", ")}`);
+      process.exit(1);
+    }
+    const resolvedMetric = {
+      eval: opts.eval || preset.eval,
+      metric: opts.metric || preset.metric,
+      direction: opts.direction || preset.direction,
+      guard: opts.guard ?? preset.guard,
+    };
+
+    const db = initDb(process.cwd());
+
+    // Handle name: @researcher or @researcher-<tag>
+    const handle = opts.tag ? `researcher-${opts.tag}` : "researcher";
+    const normalizedHandle = `@${handle}`;
+
+    // Check if this researcher is already running
+    const existingSpawn = getSpawn(db, normalizedHandle);
+    if (existingSpawn && !existingSpawn.stopped_at && isProcessAlive(existingSpawn.pid)) {
+      console.error(`Researcher is already running (PID ${existingSpawn.pid}). Use \`board research stop${opts.tag ? ` --tag ${opts.tag}` : ""}\` first.`);
+      db.close();
+      process.exit(1);
+    }
+
+    // Load researcher identity
+    let identity;
+    try {
+      identity = loadIdentity("researcher", process.cwd());
+    } catch {
+      console.error("Researcher identity not found at identities/researcher.md");
+      db.close();
+      process.exit(1);
+    }
+
+    // Build mission with metrics, focus, and scope
+    let mission = "Autonomously scan and improve this codebase. Follow the experiment loop in your identity: scan → improve → test → commit → report → repeat. Never stop.";
+
+    if (opts.focus) {
+      mission += `\n\nFOCUS: Prioritize improvements related to: ${opts.focus}`;
+    }
+
+    if (opts.scope) {
+      const files = opts.scope.split(",").map(f => f.trim());
+      mission += `\n\nIN-SCOPE FILES (only modify these):\n${files.map(f => `- ${f}`).join("\n")}`;
+    }
+
+    // Inject metric config into the identity template
+    // These replace {{PLACEHOLDER}} tokens in identities/researcher.md
+    const metricConfig = {
+      EVAL_COMMAND: resolvedMetric.eval,
+      METRIC_COMMAND: resolvedMetric.metric,
+      DIRECTION: resolvedMetric.direction,
+      GUARD_COMMAND: resolvedMetric.guard,
+    };
+
+    if (identity) {
+      let content = identity.content;
+      for (const [key, value] of Object.entries(metricConfig)) {
+        content = content.replaceAll(`{{${key}}}`, value);
+      }
+      identity = { ...identity, content };
+    }
+
+    // Create or reuse the agent
+    const existing = getAgent(db, normalizedHandle);
+    try {
+      if (existing && existingSpawn) {
+        // Respawn existing researcher
+        const result = respawnAgent(db, normalizedHandle, {
+          mission,
+          serverUrl: rc.url,
+          projectDir: process.cwd(),
+          foreground: opts.foreground,
+        });
+        console.log(`Researcher respawned (PID ${result.pid})`);
+        console.log(`  Tag: ${opts.tag || "(default)"}`);
+        console.log(`  Branch: ${result.branch}`);
+        console.log(`  Worktree: ${result.worktreePath}`);
+      } else {
+        // First time — create agent + spawn
+        if (!existing) {
+          createAgent(db, { handle, name: `Auto-Researcher${opts.tag ? ` (${opts.tag})` : ""}`, role: "worker", mission });
+        }
+        const apiKey = generateKey();
+        storeKey(db, apiKey, normalizedHandle);
+
+        const result = spawnAgent(db, {
+          handle: normalizedHandle,
+          mission,
+          apiKey,
+          serverUrl: rc.url,
+          projectDir: process.cwd(),
+          foreground: opts.foreground,
+          identity,
+        });
+        console.log(`Researcher started (PID ${result.pid})`);
+        console.log(`  Tag: ${opts.tag || "(default)"}`);
+        console.log(`  Branch: ${result.branch}`);
+        console.log(`  Worktree: ${result.worktreePath}`);
+      }
+    } catch (err: any) {
+      console.error(`Failed to start researcher: ${err.message}`);
+      db.close();
+      process.exit(1);
+    }
+
+    if (opts.focus) console.log(`  Focus: ${opts.focus}`);
+    if (opts.scope) console.log(`  Scope: ${opts.scope}`);
+    console.log(`  Preset: ${presetName}${preset ? ` — ${preset.description}` : ""}`);
+    console.log(`  Eval: ${resolvedMetric.eval}`);
+    console.log(`  Metric: ${resolvedMetric.metric}`);
+    console.log(`  Direction: ${resolvedMetric.direction}`);
+    if (resolvedMetric.guard) console.log(`  Guard: ${resolvedMetric.guard}`);
+
+    if (!opts.foreground) {
+      const h = opts.tag ? `@researcher-${opts.tag}` : "@researcher";
+      console.log("\nResearcher is running in the background.");
+      console.log(`  board research status${opts.tag ? ` --tag ${opts.tag}` : ""}  — check progress`);
+      console.log("  board feed -c #research    — see findings");
+      console.log(`  board diff ${h}     — review changes`);
+      console.log(`  board research stop${opts.tag ? ` --tag ${opts.tag}` : ""}   — stop the researcher`);
+    }
+
+    db.close();
+  });
+
+research
+  .command("presets")
+  .description("List available metric presets")
+  .action(() => {
+    console.log("Available presets:\n");
+    for (const [name, preset] of Object.entries(METRIC_PRESETS)) {
+      console.log(`  ${name}`);
+      console.log(`    ${preset.description}`);
+      console.log(`    eval:      ${preset.eval}`);
+      console.log(`    metric:    ${preset.metric}`);
+      console.log(`    direction: ${preset.direction}`);
+      console.log(`    guard:     ${preset.guard}`);
+      console.log();
+    }
+    console.log("Usage: board research start --preset <name>");
+    console.log("Override any field: board research start --preset lean --guard 'npm test'");
+  });
+
+research
+  .command("stop")
+  .description("Stop the auto-research agent")
+  .option("--tag <tag>", "Run tag to stop (default: no tag)")
+  .action(async (opts: { tag?: string }) => {
+    const { initDb } = await import("./db.js");
+    const { killAgent } = await import("./spawner.js");
+
+    const db = initDb(process.cwd());
+    const handle = opts.tag ? `@researcher-${opts.tag}` : "@researcher";
+
+    try {
+      killAgent(db, handle, process.cwd());
+      console.log(`Researcher${opts.tag ? ` (${opts.tag})` : ""} stopped.`);
+    } catch (err: any) {
+      console.error(err.message);
+    }
+
+    db.close();
+  });
+
+research
+  .command("status")
+  .description("Show auto-research agent status and recent findings")
+  .option("--tag <tag>", "Run tag to check (default: no tag)")
+  .action(async (opts: { tag?: string }) => {
+    const { initDb } = await import("./db.js");
+    const { getSpawn, isProcessAlive } = await import("./spawner.js");
+    const { listPosts } = await import("./posts.js");
+    const { getChannel } = await import("./channels.js");
+
+    const db = initDb(process.cwd());
+    const handle = opts.tag ? `@researcher-${opts.tag}` : "@researcher";
+
+    const spawn = getSpawn(db, handle);
+    if (!spawn) {
+      console.log(`No researcher${opts.tag ? ` (${opts.tag})` : ""} has been started. Run \`board research start${opts.tag ? ` --tag ${opts.tag}` : ""}\`.`);
+      db.close();
+      return;
+    }
+
+    const alive = !spawn.stopped_at && isProcessAlive(spawn.pid);
+    console.log(`Researcher${opts.tag ? ` (${opts.tag})` : ""}: ${alive ? "RUNNING" : "STOPPED"}`);
+    console.log(`  PID: ${spawn.pid}`);
+    console.log(`  Branch: ${spawn.branch || "(none)"}`);
+    console.log(`  Started: ${spawn.started_at}`);
+    if (spawn.stopped_at) console.log(`  Stopped: ${spawn.stopped_at}`);
+
+    // Show results.md if it exists in the worktree
+    if (spawn.worktree_path) {
+      const resultsPath = path.join(spawn.worktree_path, "results.md");
+      if (fs.existsSync(resultsPath)) {
+        const results = fs.readFileSync(resultsPath, "utf-8").trim();
+        const lines = results.split("\n");
+        // Count experiments (lines after header row and separator)
+        const experiments = lines.filter(l => l.startsWith("|") && !l.includes("commit") && !l.includes("---")).length;
+        const kept = lines.filter(l => l.includes("| keep |")).length;
+        const discarded = lines.filter(l => l.includes("| discard |")).length;
+        const crashed = lines.filter(l => l.includes("| crash |")).length;
+
+        console.log(`\nExperiments: ${experiments} total — ${kept} kept, ${discarded} discarded, ${crashed} crashed`);
+
+        // Show last 5 entries
+        const dataLines = lines.filter(l => l.startsWith("|") && !l.includes("commit") && !l.includes("---"));
+        const recent = dataLines.slice(-5);
+        if (recent.length > 0) {
+          console.log("\nRecent experiments:");
+          for (const line of recent) {
+            console.log(`  ${line}`);
+          }
+        }
+      }
+    }
+
+    // Show recent research posts
+    if (getChannel(db, "#research")) {
+      const posts = listPosts(db, { channel: "#research", limit: 5 });
+      if (posts.length > 0) {
+        console.log(`\nRecent posts (${posts.length}):`);
+        for (const p of posts) {
+          const preview = p.content.substring(0, 120).replace(/\n/g, " ");
+          console.log(`  ${p.created_at.substring(11, 16)} — ${preview}`);
+        }
+      }
+    }
+
+    // Show diff stats if branch exists
+    if (spawn.branch) {
+      try {
+        const stat = execSync(`git diff --stat main..${spawn.branch}`, {
+          cwd: process.cwd(),
+          encoding: "utf-8",
+          stdio: "pipe",
+        });
+        if (stat.trim()) {
+          console.log(`\nAccumulated changes vs main:`);
+          console.log(stat);
+        }
+      } catch { /* branch may not exist yet */ }
+    }
+
+    db.close();
+  });
+
+research
+  .command("focus <topic>")
+  .description("Steer the researcher to focus on a specific area")
+  .action(async (topic: string) => {
+    const rc = readBoardRC();
+    if (!rc) {
+      console.error("No .boardrc found. Run `board init` first.");
+      process.exit(1);
+    }
+
+    // Post a directive that the researcher will pick up
+    try {
+      const res = await fetch(`${rc.url}/api/posts`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${rc.key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content: `focus: ${topic}`,
+          channel: "#research",
+        }),
+      });
+      if (!res.ok) {
+        console.error(`Failed to post directive: ${res.status}`);
+        process.exit(1);
+      }
+      console.log(`Focus directive posted: "${topic}"`);
+      console.log("The researcher will pick this up in its next cycle.");
+    } catch (err: any) {
+      console.error(`Server not reachable: ${err.message}`);
+      process.exit(1);
+    }
   });
 
 // If no subcommand given, launch interactive mode

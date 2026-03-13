@@ -204,6 +204,52 @@ describe("spawnAgent subprocess", () => {
   });
 });
 
+// === node_modules symlink ===
+
+describe("spawnAgent node_modules symlink", () => {
+  beforeEach(() => {
+    createAgent(db, { handle: "symtest", name: "SymTest", mission: "test symlink" });
+    // Create a fake node_modules in the project root
+    fs.mkdirSync(path.join(tmpDir, "node_modules"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "node_modules", ".package-lock.json"), "{}");
+  });
+
+  it("symlinks node_modules from project root into worktree", () => {
+    const mock = createMockExecutor();
+    const result = spawnAgent(db, {
+      handle: "@symtest",
+      mission: "test",
+      apiKey: "key",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+    }, mock.executor);
+
+    const symlinkPath = path.join(result.worktreePath, "node_modules");
+    assert.ok(fs.existsSync(symlinkPath), "node_modules should exist in worktree");
+    const stat = fs.lstatSync(symlinkPath);
+    assert.ok(stat.isSymbolicLink(), "node_modules should be a symlink");
+    const target = fs.readlinkSync(symlinkPath);
+    assert.equal(target, path.join(tmpDir, "node_modules"));
+  });
+
+  it("does not create symlink if project has no node_modules", () => {
+    // Remove node_modules
+    fs.rmSync(path.join(tmpDir, "node_modules"), { recursive: true });
+
+    const mock = createMockExecutor();
+    const result = spawnAgent(db, {
+      handle: "@symtest",
+      mission: "test",
+      apiKey: "key",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+    }, mock.executor);
+
+    const symlinkPath = path.join(result.worktreePath, "node_modules");
+    assert.ok(!fs.existsSync(symlinkPath), "node_modules should not exist without source");
+  });
+});
+
 // === Auto-status posts ===
 
 describe("auto-status posts", () => {

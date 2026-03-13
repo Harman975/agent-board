@@ -1,55 +1,80 @@
 # TODOs
 
+## Done
+
+### ~~Identity library~~ ✓
+Built: `identities/` folder with YAML frontmatter markdown files. `loadIdentity()`, `listIdentities()`, `saveIdentity()`, `parseIdentityFrontmatter()` in `src/identities.ts`. Researcher identity ships as `identities/researcher.md`. Injected into CLAUDE.md at spawn time.
+
+### ~~Auto-research system~~ ✓
+Built: Karpathy-style autonomous self-improvement loop. `board research start/stop/status/focus/presets`. Researcher identity with templated metrics (`{{EVAL_COMMAND}}`, `{{METRIC_COMMAND}}`, `{{DIRECTION}}`, `{{GUARD_COMMAND}}`). User-definable metrics at launch — like Karpathy's val_bpb but configurable per session. Five built-in presets: tests, lean, coverage, speed, security. Worktree isolation with node_modules symlink. Results tracked in `results.md`, findings posted to `#research` channel.
+
+### ~~Worktree node_modules symlink~~ ✓
+Built: `spawner.ts` `createWorktree()` symlinks `node_modules` from project root into every worktree so agents can run tests/builds without `npm install`.
+
+### ~~`board diff @agent`~~ ✓
+Built: cli.ts:1103-1137. `git diff main..{branch}` with `--stat` flag. Looks up spawn record for branch name.
+
+### ~~`board validate-sprint`~~ ✓
+Built: cli.ts:1172-1299. Checks all agents stopped, runs `npm test`, shows diff stats per branch, detects file conflicts (files changed by multiple branches), suggests merge order (fewest files first), outputs JSON validation result.
+
+### ~~`board merge @agent`~~ ✓
+Built: cli.ts:706-728, spawner.ts:416-488. Merges agent branch into main with `--cleanup` flag to remove worktree + branch after.
+
+### ~~`board log @agent`~~ ✓
+Built: cli.ts:1140-1169. Tails agent log file with `--follow` flag for live tailing.
+
+### ~~Ship as npm package~~ ✓ (config done)
+Config complete: shebang via tsup banner, `"files": ["dist"]` in package.json, bin entry `"board": "./dist/cli.js"`. Just needs `npm publish` when ready.
+
+---
+
 ## Sprint Loop — P1 (the critical path)
 
-### Identity library (P1)
-**What:** Add an `identities/` folder system with markdown files that define agent personas — expertise, personality, processes, constraints. CLI commands: `board identity list`, `board identity show <name>`, `board identity create <name>`. Identities are injected into an agent's CLAUDE.md at spawn time via `--identity` flag on `board spawn`.
-**Why:** Agents are currently blank slates. Identities turn them into specialized roles (backend-architect, test-engineer, frontend-dev) with domain expertise baked in. This is the difference between "do this task" and "you are an expert at X, do this task." Inspired by [agency-agents](https://github.com/msitarzewski/agency-agents) — 120+ curated agent personalities.
-**Context:** Identity file format: markdown with YAML frontmatter (name, description, expertise, vibe). Body contains personality, processes, constraints, success criteria. At spawn time, identity content gets prepended to the agent's CLAUDE.md alongside project context + board API + mission. The `--identity` flag is optional — bare `board spawn` still works for ad-hoc agents.
-**Effort:** M
-**Depends on:** Nothing
-
-### `board diff @agent` (P1)
-**What:** Show the diff of an agent's worktree branch against main without merging.
-**Why:** During a sprint, you want to review what each agent has built before committing to merge. Currently requires `cd .worktrees/@agent && git diff main` manually. Essential input to validate-sprint and merge-sprint.
-**Context:** Simple wrapper: `git diff main..agent/<handle>` run from project root. Show file stats + full diff. Add `--stat` flag for summary only. Look up spawn record for worktree path / branch name.
-**Effort:** S
-**Depends on:** Nothing
-
-### `board validate-sprint` (P1)
-**What:** Pre-flight check before merge choreography: verify all agents stopped, run `npm test`, show combined diff stats across all agent branches, detect file conflicts between branches, suggest merge order based on file dependencies.
-**Why:** Automates the manual "are we ready to merge?" checklist. During the M2 sprint we did this manually — checking `board ps`, running tests, diffing each branch. Catches merge disasters before they happen.
-**Context:** Check `board ps` (all stopped), run test suite, `git diff --stat main..agent/*` for each branch, cross-reference changed files to detect overlap, suggest dependency-based merge order (e.g., schema before server before CLI).
-**Effort:** M
-**Depends on:** `board diff @agent`
-
 ### `board merge-sprint` (P1)
-**What:** Automated merge choreography: merge agent branches in dependency order, run `npm test` after each merge, stop and report on first failure, post results to #status channel. Uses validate-sprint internally as pre-flight.
-**Why:** The M2 merge required 4 manual merges with test gates and an import fix between merges. This should be a single command. It's the automation that makes multi-agent sprints practical for daily use.
-**Context:** Takes merge order from validate-sprint (or user override). For each branch: `git merge --no-edit`, `npm test`, if fail → stop + report, if pass → continue. Posts summary to #status when complete. Supports `--dry-run` to preview without merging.
+**What:** Automated sequential merge of all agent branches with test gates between each merge. Calls validate-sprint internally as pre-flight, then merges in suggested order, runs `npm test` after each, stops and reports on first failure, posts results to #status channel.
+**Why:** The M2 merge required 4 manual merges with test gates and an import fix between merges. This should be a single command. `board merge` exists for individual agents but there's no automated multi-merge with test gates.
+**Context:** Uses existing `validate-sprint` for pre-flight + merge order. Uses existing `mergeAgent()` from spawner.ts for each merge. New logic: sequential loop with test gate between each. Supports `--dry-run` to preview. Posts summary to #status. If a merge fails tests, stops and reports which agent's merge broke things.
 **Effort:** M
-**Depends on:** `board validate-sprint`
+**Depends on:** validate-sprint (done), merge @agent (done)
 
 ### `board sprint` orchestrator (P1)
-**What:** The single command that runs a full agent sprint: user provides goal + agent/identity/mission list, command handles create team, spawn agents with identities, monitor via feed, detect completion, run validate-sprint, run merge-sprint, write retro.
-**Why:** This is the killer feature. Everything else is a building block for this. `board sprint "Build feature X"` should be all a user needs to type. The M2 sprint proved the pattern — this codifies it.
-**Context:** Input format: YAML or CLI flags specifying agents with identities and missions. The command: (1) creates a team + route for the sprint, (2) pre-commits any schema/type changes if needed, (3) spawns all agents in parallel with identity injection, (4) enters monitoring mode (polls `board ps` + shows feed), (5) on all-done: runs validate-sprint, (6) prompts user to review diffs, (7) runs merge-sprint, (8) generates retro. Start simple: user provides the full agent list, defer automatic decomposition.
+**What:** Single command that runs a full agent sprint: user provides goal + agent/identity/mission list, command handles spawn agents with identities, monitor via feed, detect completion, run validate-sprint, prompt to review diffs, run merge-sprint, generate retro.
+**Why:** This is the killer feature. `board sprint "Build feature X"` should be all a user needs. The M2 sprint proved the pattern — this codifies it.
+**Context:** Input format: YAML or CLI flags specifying agents with identities and missions. The command: (1) spawns all agents in parallel with identity injection, (2) enters monitoring mode (polls `board ps` + shows feed), (3) on all-done: runs validate-sprint, (4) prompts user to review diffs, (5) runs merge-sprint, (6) generates retro. Start simple: user provides the full agent list, defer automatic task decomposition.
 **Effort:** L
-**Depends on:** Identity library, validate-sprint, merge-sprint
+**Depends on:** merge-sprint
 
-### Ship as npm package (P1)
-**What:** Publish AgentBoard to npm as `agentboard` (or `agent-board`). Users install with `npm install -g agentboard` and get the `board` command globally. Add proper bin entry, shebang, and ensure all dependencies are bundled correctly.
-**Why:** Nobody can use this unless they can install it. The bin entry already exists in package.json (`"board": "./dist/cli.js"`), but we need: npm publish config, a shebang line in the CLI entry, verify the built dist/ works standalone, and pick the package name.
-**Context:** tsup already builds ESM output to dist/. The `board` bin entry points to `dist/cli.js`. Need to: (1) add `#!/usr/bin/env node` shebang to CLI output (tsup banner option), (2) set `"files": ["dist"]` in package.json so only built output ships, (3) verify `npx agentboard` works, (4) `npm publish`. Also need to decide: `agentboard` vs `agent-board` vs `@agentboard/cli` for the package name.
+### `board init` polish (P1)
+**What:** Enhance the existing `board init` with starter identities and clearer next-step messaging. Current init (cli.ts:110-167) already creates DB, admin agent, #general channel, admin key, .dag/ repo, .boardrc, and auto-starts server.
+**Why:** First-run experience needs to end with "try `board research start`" or "try `board sprint`". Scaffolding starter identities gives users something to work with immediately.
+**Context:** Add: (1) scaffold `identities/` with 3-4 starter identities (backend-architect, test-engineer, code-reviewer), (2) print clear next steps pointing to sprint/research commands, (3) check if identities/ already exists before scaffolding.
 **Effort:** S
-**Depends on:** Nothing (can do anytime)
+**Depends on:** Nothing
 
-### `board init` guided setup (P1)
-**What:** Make `board init` a guided onboarding experience for new users. Currently it just creates a DB and prints a message. It should: create DB, start the server (or prompt to), create the admin key, print a "you're ready" message with next steps, and optionally create a default set of identities.
-**Why:** First-run experience IS the product experience. If `board init` is confusing, people leave. A 30-second guided setup that ends with "try `board sprint`" is the onramp.
-**Context:** Current `board init` in cli.ts creates DB + prints admin key. Needs: (1) auto-start server in background (or check if already running), (2) create `.boardrc` with URL + admin key, (3) print clear next steps, (4) optionally scaffold `identities/` with 3-4 starter identities (backend-architect, test-engineer, frontend-dev, code-reviewer).
+---
+
+## Auto-Research Enhancements — P2
+
+### Custom metric presets via file (P2)
+**What:** Let users define custom presets in a `presets/` folder (or `.board/presets/`) as YAML/JSON files, loaded alongside the built-in presets. `board research presets` shows both built-in and custom.
+**Why:** The 5 built-in presets cover common cases, but teams will want project-specific metrics (e.g., bundle size, API response time, lint score). Currently they have to pass `--eval/--metric/--direction/--guard` every time.
+**Context:** Built-in presets live in `METRIC_PRESETS` in cli.ts. Custom presets would be files like `presets/bundle-size.yml` with the same fields. `board research presets` merges both sets.
 **Effort:** S
-**Depends on:** Identity library (for starter identities, but init can work without them)
+**Depends on:** Nothing
+
+### Research session history (P2)
+**What:** `board research history` shows past research sessions — tag, preset used, metric values at start/end, experiments run, kept/discarded ratio.
+**Why:** After running several research sessions, you want to see which ones were productive and what presets worked best. Currently results.md is per-session and in the worktree.
+**Context:** Could query spawn records + read results.md from worktree paths. Or store summary in DB when researcher stops.
+**Effort:** S
+**Depends on:** Nothing
+
+### DRY refactor: spawn logic in CLI (P2)
+**What:** Extract duplicated spawn logic from `board spawn`, `board research start`, and future sprint commands into a shared helper.
+**Why:** Three commands all do: check .boardrc, init DB, load identity, create agent, generate key, call spawnAgent. Copy-pasted with minor variations. Adding a 4th caller will make this worse.
+**Context:** Extract a `prepareAndSpawn()` helper that takes handle, mission, identity name, and options. Each CLI command becomes a thin wrapper.
+**Effort:** S
+**Depends on:** Nothing
 
 ---
 
@@ -60,13 +85,6 @@
 **Why:** Institutional knowledge. Without it, each sprint starts from scratch. The retro data (timing, conflicts, agent behavior) is only available immediately after the sprint.
 **Context:** Query spawn records for timing, git log for merge conflicts, test output for pass/fail delta. Template: sprint name, date, agents spawned, total time, merge conflicts (count + files), test results (before/after), lessons learned. Called automatically at end of `board sprint` or standalone.
 **Effort:** S
-**Depends on:** First sprint completion (done)
-
-### `board log @agent` (P2)
-**What:** Tail an agent's log file without knowing the path. `board log @m2-schema` instead of `tail -f .worktrees/@m2-schema/agent.log`. Add `--follow` flag for live tailing.
-**Why:** During sprints you're constantly checking agent logs. Having to remember worktree paths is friction.
-**Context:** Look up spawn record for agent handle, get `log_path`, exec `tail` (or `tail -f` with `--follow`). Error if agent has no spawn record or log path is null (foreground mode).
-**Effort:** S
 **Depends on:** Nothing
 
 ### Agency-agents format compatibility (P2)
@@ -74,7 +92,7 @@
 **Why:** Instant library of 120+ curated agent identities for free. Good ecosystem play — don't reinvent what already exists.
 **Context:** The agency-agents format uses YAML frontmatter (name, description, color, emoji, vibe) + markdown body with sections for identity, philosophy, rules, processes, success criteria. Our import command reads these and copies/converts into our identities/ folder.
 **Effort:** S
-**Depends on:** Identity library
+**Depends on:** Nothing
 
 ### Agent mission cards in web dashboard (P2)
 **What:** Sidebar panel showing each active agent's mission, status, and latest post. Sprint war room view.
@@ -99,7 +117,7 @@
 **Why:** This is the bridge between the DAG layer and the org structure. Without it, only the CEO can review code — managers are limited to reading posts. The whole point of the DAG is that managers can see actual work, not just status updates.
 **Context:** Managers should be able to: fetch bundles from agents on their team, run `git diff` between competing approaches, post decision posts explaining why one approach won, promote the winner (or escalate to CEO). This builds on the existing DAG routes and the team/manager concepts. Deferred until sprint loop is solid — the sprint loop is the daily driver, manager autonomy is the 6-month vision.
 **Effort:** L
-**Depends on:** Sprint loop (complete), identity library
+**Depends on:** Sprint loop (complete)
 
 ### Web dashboard DAG visualization (P3)
 **What:** Add a DAG tree/graph view to the web dashboard showing commit ancestry, leaves, and agent activity.
@@ -107,3 +125,10 @@
 **Context:** The `/data/dag` endpoint already returns `DagSummary`. A new panel or tab could render this as an interactive tree or graph. Start simple (list of leaves with agent badges) and evolve to full DAG graph.
 **Effort:** M
 **Depends on:** Git DAG layer (complete)
+
+### Multi-researcher orchestration (P3)
+**What:** Run multiple researchers in parallel on different presets, then merge the best results. E.g., one researcher optimizing test count while another minimizes LOC — both constrained by tests passing.
+**Why:** Different optimization targets can conflict (more tests = more code). Running them in parallel on separate branches and merging non-conflicting wins is more productive than sequential sessions.
+**Context:** Each researcher already runs in its own worktree/branch via `--tag`. The missing piece is a coordinator that compares results across sessions and merges compatible improvements.
+**Effort:** L
+**Depends on:** Auto-research system (complete)

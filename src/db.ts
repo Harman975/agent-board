@@ -111,6 +111,25 @@ CREATE TABLE IF NOT EXISTS routes (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS sprints (
+  name TEXT PRIMARY KEY,
+  goal TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running'
+    CHECK(status IN ('running', 'finished', 'failed')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sprint_agents (
+  sprint_name TEXT NOT NULL REFERENCES sprints(name),
+  agent_handle TEXT NOT NULL,
+  identity_name TEXT,
+  mission TEXT,
+  PRIMARY KEY (sprint_name, agent_handle)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sprint_agents_sprint ON sprint_agents(sprint_name);
+CREATE INDEX IF NOT EXISTS idx_sprint_agents_agent ON sprint_agents(agent_handle);
 CREATE INDEX IF NOT EXISTS idx_teams_manager ON teams(manager);
 CREATE INDEX IF NOT EXISTS idx_team_members_agent ON team_members(agent_handle);
 CREATE INDEX IF NOT EXISTS idx_routes_team ON routes(team_name);
