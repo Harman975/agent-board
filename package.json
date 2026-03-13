@@ -1,10 +1,25 @@
 {
-  "name": "agent-board",
+  "name": "agentboard",
   "version": "0.1.0",
   "description": "A Twitter-like feed for supervising AI agents",
   "type": "module",
   "bin": {
     "board": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "ai",
+    "agents",
+    "supervision",
+    "dashboard",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Harman975/agent-board.git"
   },
   "scripts": {
     "build": "tsup",
