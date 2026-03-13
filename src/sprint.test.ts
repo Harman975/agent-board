@@ -1059,91 +1059,93 @@ describe("Sprint suggest output format", () => {
   });
 });
 
-describe("Steer writes directive", () => {
+describe("Steer writes directive to CLAUDE.md", () => {
   let tmpDir: string;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-steer-test-"));
-    fs.mkdirSync(path.join(tmpDir, ".worktrees", "@agent1"), { recursive: true });
+    const worktreePath = path.join(tmpDir, ".worktrees", "@agent1");
+    fs.mkdirSync(worktreePath, { recursive: true });
+    // Write a CLAUDE.md with Active Directives section (as generateAgentClaudeMd produces)
+    fs.writeFileSync(
+      path.join(worktreePath, "CLAUDE.md"),
+      "# Agent\n\n## Active Directives\n\nNo active directives.\n\n## Board API\n\nstuff\n"
+    );
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes DIRECTIVE.md to agent worktree", () => {
-    const worktreePath = path.join(tmpDir, ".worktrees", "@agent1");
-    const directivePath = path.join(worktreePath, "DIRECTIVE.md");
-    const message = "Focus on the API endpoints first";
-    const timestamp = new Date().toISOString();
+  it("writes directive into Active Directives section of CLAUDE.md", async () => {
+    const { writeDirective } = await import("./spawner.js");
+    writeDirective(tmpDir, "@agent1", "Focus on the API endpoints first");
 
-    // Simulate what steer command does
-    const content = `# Directives from @admin\n\n[${timestamp}] ${message}\n`;
-    fs.writeFileSync(directivePath, content);
-
-    assert.ok(fs.existsSync(directivePath));
-    const written = fs.readFileSync(directivePath, "utf-8");
-    assert.ok(written.includes("Focus on the API endpoints first"));
-    assert.ok(written.includes("Directives from @admin"));
+    const content = fs.readFileSync(
+      path.join(tmpDir, ".worktrees", "@agent1", "CLAUDE.md"),
+      "utf-8"
+    );
+    assert.ok(content.includes("Focus on the API endpoints first"));
+    assert.ok(content.includes("## Active Directives"));
+    assert.ok(!content.includes("No active directives."));
   });
 
-  it("appends to existing DIRECTIVE.md", () => {
-    const worktreePath = path.join(tmpDir, ".worktrees", "@agent1");
-    const directivePath = path.join(worktreePath, "DIRECTIVE.md");
+  it("appends multiple directives preserving previous ones", async () => {
+    const { writeDirective } = await import("./spawner.js");
+    writeDirective(tmpDir, "@agent1", "First directive");
+    writeDirective(tmpDir, "@agent1", "Second directive");
 
-    // First directive
-    const t1 = "2026-03-13T10:00:00Z";
-    fs.writeFileSync(directivePath, `# Directives from @admin\n\n[${t1}] First directive\n`);
-
-    // Second directive (append)
-    const t2 = "2026-03-13T11:00:00Z";
-    const existing = fs.readFileSync(directivePath, "utf-8");
-    fs.writeFileSync(directivePath, existing + `\n---\n[${t2}] Second directive\n`);
-
-    const written = fs.readFileSync(directivePath, "utf-8");
-    assert.ok(written.includes("First directive"));
-    assert.ok(written.includes("Second directive"));
-    assert.ok(written.includes("---"));
+    const content = fs.readFileSync(
+      path.join(tmpDir, ".worktrees", "@agent1", "CLAUDE.md"),
+      "utf-8"
+    );
+    assert.ok(content.includes("First directive"));
+    assert.ok(content.includes("Second directive"));
   });
 });
 
-describe("Steer --clear resets directives", () => {
+describe("Steer --clear resets directives in CLAUDE.md", () => {
   let tmpDir: string;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-steer-clear-test-"));
-    fs.mkdirSync(path.join(tmpDir, ".worktrees", "@agent1"), { recursive: true });
+    const worktreePath = path.join(tmpDir, ".worktrees", "@agent1");
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.writeFileSync(
+      path.join(worktreePath, "CLAUDE.md"),
+      "# Agent\n\n## Active Directives\n\n- [2026-03-13T10:00:00Z] Some directive\n\n## Board API\n\nstuff\n"
+    );
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("removes DIRECTIVE.md from agent worktree", () => {
-    const worktreePath = path.join(tmpDir, ".worktrees", "@agent1");
-    const directivePath = path.join(worktreePath, "DIRECTIVE.md");
+  it("resets Active Directives section to empty", async () => {
+    const { clearDirectives } = await import("./spawner.js");
+    clearDirectives(tmpDir, "@agent1");
 
-    // Write a directive
-    fs.writeFileSync(directivePath, "# Directives from @admin\n\nSome directive\n");
-    assert.ok(fs.existsSync(directivePath));
-
-    // Clear directives (simulate --clear)
-    fs.unlinkSync(directivePath);
-    assert.ok(!fs.existsSync(directivePath));
+    const content = fs.readFileSync(
+      path.join(tmpDir, ".worktrees", "@agent1", "CLAUDE.md"),
+      "utf-8"
+    );
+    assert.ok(content.includes("No active directives."));
+    assert.ok(!content.includes("Some directive"));
+    // Board API section should still be intact
+    assert.ok(content.includes("## Board API"));
   });
 
-  it("handles clearing when no DIRECTIVE.md exists", () => {
+  it("handles clearing when already empty (no-op)", async () => {
     const worktreePath = path.join(tmpDir, ".worktrees", "@agent1");
-    const directivePath = path.join(worktreePath, "DIRECTIVE.md");
+    fs.writeFileSync(
+      path.join(worktreePath, "CLAUDE.md"),
+      "# Agent\n\n## Active Directives\n\nNo active directives.\n\n## Board API\n\nstuff\n"
+    );
 
-    // No directive exists
-    assert.ok(!fs.existsSync(directivePath));
+    const { clearDirectives } = await import("./spawner.js");
+    clearDirectives(tmpDir, "@agent1");
 
-    // Clearing should not throw
-    if (fs.existsSync(directivePath)) {
-      fs.unlinkSync(directivePath);
-    }
-    // No error means success
-    assert.ok(!fs.existsSync(directivePath));
+    const content = fs.readFileSync(path.join(worktreePath, "CLAUDE.md"), "utf-8");
+    assert.ok(content.includes("No active directives."));
   });
 });

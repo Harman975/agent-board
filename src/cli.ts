@@ -1491,53 +1491,36 @@ program
   .option("--clear", "Clear all directives for this agent")
   .action(async (handle: string, message: string | undefined, opts: { clear?: boolean }) => {
     const h = handle.startsWith("@") ? handle : `@${handle}`;
-
-    const { getSpawn } = await import("./spawner.js");
-    const { getDb } = await import("./db.js");
-    const db = getDb();
-
-    const spawn = getSpawn(db, h);
-    if (!spawn) {
-      console.error(`No spawn record for ${h}`);
-      db.close();
-      process.exit(1);
-    }
-
-    if (!spawn.worktree_path) {
-      console.error(`No worktree path for ${h}`);
-      db.close();
-      process.exit(1);
-    }
-
-    const directivePath = path.join(spawn.worktree_path, "DIRECTIVE.md");
+    const projectDir = process.cwd();
 
     if (opts.clear) {
-      // Clear directives
-      if (fs.existsSync(directivePath)) {
-        fs.unlinkSync(directivePath);
+      const { clearDirectives } = await import("./spawner.js");
+      try {
+        clearDirectives(projectDir, h);
         console.log(`Cleared directives for ${h}`);
-      } else {
-        console.log(`No directives to clear for ${h}`);
+      } catch (err: any) {
+        console.error(err.message);
+        process.exit(1);
       }
-      db.close();
       return;
     }
 
     if (!message) {
       console.error("Message is required (or use --clear)");
-      db.close();
       process.exit(1);
     }
 
-    // Write directive to agent's worktree
-    const timestamp = new Date().toISOString();
-    const directiveContent = fs.existsSync(directivePath)
-      ? fs.readFileSync(directivePath, "utf-8") + `\n---\n[${timestamp}] ${message}\n`
-      : `# Directives from @admin\n\n[${timestamp}] ${message}\n`;
-    fs.writeFileSync(directivePath, directiveContent);
-    console.log(`Wrote directive to ${h}`);
+    // Write directive to agent's CLAUDE.md Active Directives section
+    const { writeDirective } = await import("./spawner.js");
+    try {
+      writeDirective(projectDir, h, message);
+      console.log(`Wrote directive to ${h}`);
+    } catch (err: any) {
+      console.error(err.message);
+      process.exit(1);
+    }
 
-    // Post directive to #work as @admin
+    // Also post to #work for visibility
     const rc = readBoardRC();
     if (rc) {
       try {
@@ -1548,11 +1531,9 @@ program
         });
         console.log(`Posted directive to #work`);
       } catch {
-        // Best effort — agent may still read DIRECTIVE.md
+        // Best effort — agent reads CLAUDE.md regardless
       }
     }
-
-    db.close();
   });
 
 // --- board identity ---
