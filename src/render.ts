@@ -1,4 +1,4 @@
-import type { Agent, DagCommit, Post, RankedPost } from "./types.js";
+import type { Agent, DagCommit, Post, RankedPost, Team, TeamMember, Route } from "./types.js";
 import type { PostThread } from "./posts.js";
 import type { BriefingSummary } from "./supervision.js";
 import type { DagSummary, PromoteResult } from "./gitdag.js";
@@ -305,6 +305,100 @@ export function renderPromoteSummary(result: PromoteResult): string {
     `  Main commit: ${colorHash(result.newHash)}`,
     `  Message:     ${result.message}`,
   ].join("\n");
+}
+
+// === Team & Route rendering ===
+
+function colorTeamStatus(status: string): string {
+  if (status === "building") return `${c.green}${status}${c.reset}`;
+  if (status === "blocked") return `${c.red}${status}${c.reset}`;
+  if (status === "done") return `${c.dim}${status}${c.reset}`;
+  return `${c.yellow}${status}${c.reset}`;
+}
+
+function colorRouteStatus(status: string): string {
+  if (status === "chosen") return `${c.green}${status}${c.reset}`;
+  if (status === "abandoned") return `${c.dim}${status}${c.reset}`;
+  return `${c.yellow}${status}${c.reset}`;
+}
+
+export function renderTeam(team: Team & { members?: TeamMember[] }): string {
+  const lines = [
+    `${c.bold}${team.name}${c.reset}  [${colorTeamStatus(team.status)}]`,
+    `  Mission: ${team.mission}`,
+    `  Manager: ${colorHandle(team.manager)}`,
+  ];
+  if (team.members && team.members.length > 0) {
+    lines.push(`  Members: ${team.members.map((m) => colorHandle(m.agent_handle)).join(", ")}`);
+  } else {
+    lines.push(`  Members: ${c.dim}none${c.reset}`);
+  }
+  lines.push(`  Created: ${colorTime(formatTime(team.created_at))}`);
+  return lines.join("\n");
+}
+
+export function renderTeamList(teams: Team[]): string {
+  if (teams.length === 0) return `  ${c.dim}No teams.${c.reset}`;
+  return teams
+    .map((t) => `  ${c.bold}${t.name}${c.reset}  [${colorTeamStatus(t.status)}]  ${c.dim}${t.mission}${c.reset}`)
+    .join("\n");
+}
+
+export function renderRoute(route: Route): string {
+  const lines = [
+    `${c.bold}${route.name}${c.reset}  [${colorRouteStatus(route.status)}]`,
+    `  Agent: ${colorHandle(route.agent_handle)}`,
+    `  Team:  ${route.team_name}`,
+    `  Created: ${colorTime(formatTime(route.created_at))}`
+  ];
+  return lines.join("\n");
+}
+
+export function renderRouteList(routes: Route[]): string {
+  if (routes.length === 0) return `  ${c.dim}No routes.${c.reset}`;
+  return routes
+    .map((r) => `  ${c.bold}${r.name}${c.reset}  [${colorRouteStatus(r.status)}]  ${colorHandle(r.agent_handle)}  ${c.dim}${r.team_name}${c.reset}`)
+    .join("\n");
+}
+
+export function renderOrg(teams: (Team & { members?: TeamMember[] })[], routes: Route[]): string {
+  const lines: string[] = [];
+  lines.push(`${c.bold}Organization${c.reset}`);
+  lines.push("");
+
+  if (teams.length === 0) {
+    lines.push(`  ${c.dim}No teams.${c.reset}`);
+  } else {
+    for (const team of teams) {
+      const members = team.members && team.members.length > 0
+        ? team.members.map((m) => colorHandle(m.agent_handle)).join(", ")
+        : `${c.dim}none${c.reset}`;
+      lines.push(`  ${c.bold}${team.name}${c.reset}  [${colorTeamStatus(team.status)}]  mgr:${colorHandle(team.manager)}`);
+      lines.push(`    ${c.dim}${team.mission}${c.reset}`);
+      lines.push(`    Members: ${members}`);
+
+      const teamRoutes = routes.filter((r) => r.team_name === team.name);
+      if (teamRoutes.length > 0) {
+        lines.push(`    Routes:`);
+        for (const r of teamRoutes) {
+          lines.push(`      ${c.bold}${r.name}${c.reset}  [${colorRouteStatus(r.status)}]  ${colorHandle(r.agent_handle)}`);
+        }
+      }
+      lines.push("");
+    }
+  }
+
+  // Show orphan routes (not belonging to any listed team)
+  const teamNames = new Set(teams.map((t) => t.name));
+  const orphanRoutes = routes.filter((r) => !teamNames.has(r.team_name));
+  if (orphanRoutes.length > 0) {
+    lines.push(`  ${c.dim}Unassigned routes:${c.reset}`);
+    for (const r of orphanRoutes) {
+      lines.push(`    ${c.bold}${r.name}${c.reset}  [${colorRouteStatus(r.status)}]  ${colorHandle(r.agent_handle)}  ${c.dim}${r.team_name}${c.reset}`);
+    }
+  }
+
+  return lines.join("\n");
 }
 
 export function renderDagSummary(summary: DagSummary): string {

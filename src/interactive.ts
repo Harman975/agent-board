@@ -8,9 +8,13 @@ import {
   renderFeed,
   renderSpawnList,
   renderBriefing,
+  renderTeamList,
+  renderRouteList,
+  renderTeam,
+  renderOrg,
   type SpawnInfo,
 } from "./render.js";
-import type { RankedPost } from "./types.js";
+import type { RankedPost, Team, TeamMember, Route } from "./types.js";
 import type { BriefingSummary } from "./supervision.js";
 import type Database from "better-sqlite3";
 
@@ -377,19 +381,110 @@ async function actionPost(rc: BoardRC, rl: readline.Interface) {
   }
 }
 
+// === Team & Route actions ===
+
+async function actionTeamCreate(rc: BoardRC, rl: readline.Interface) {
+  const name = await ask(rl, `  ${c.green}Team name:${c.reset} `);
+  if (!name) return;
+  const mission = await ask(rl, `  ${c.green}Mission:${c.reset}   `);
+  const manager = await ask(rl, `  ${c.green}Manager:${c.reset}  @`);
+
+  const body: Record<string, string> = { name };
+  if (mission) body.mission = mission;
+  if (manager) body.manager = manager.startsWith("@") ? manager : `@${manager}`;
+
+  const res = await api<Team>(rc, "POST", "/api/teams", body);
+  if (res.ok) {
+    console.log(`\n  ${c.green}Created team ${res.data.name}${c.reset}\n`);
+  } else {
+    console.log(`\n  ${c.red}Error: ${(res.data as any).error}${c.reset}\n`);
+  }
+}
+
+async function actionTeamList(rc: BoardRC) {
+  const res = await api<Team[]>(rc, "GET", "/api/teams");
+  if (res.ok) {
+    console.log();
+    console.log(renderTeamList(res.data));
+    console.log();
+  }
+}
+
+async function actionTeamShow(rc: BoardRC, rl: readline.Interface) {
+  const name = await ask(rl, `  ${c.green}Team name:${c.reset} `);
+  if (!name) return;
+
+  const res = await api<Team & { members?: TeamMember[] }>(
+    rc, "GET", `/api/teams/${encodeURIComponent(name)}`
+  );
+  if (res.ok) {
+    console.log();
+    console.log(renderTeam(res.data));
+    console.log();
+  } else {
+    console.log(`\n  ${c.red}Error: ${(res.data as any).error}${c.reset}\n`);
+  }
+}
+
+async function actionRouteCreate(rc: BoardRC, rl: readline.Interface) {
+  const name = await ask(rl, `  ${c.green}Route name:${c.reset} `);
+  if (!name) return;
+  const teamName = await ask(rl, `  ${c.green}Team:${c.reset}       `);
+  const agent = await ask(rl, `  ${c.green}Agent:${c.reset}     @`);
+
+  const body: Record<string, string> = { name };
+  if (teamName) body.team_name = teamName;
+  if (agent) body.agent_handle = agent.startsWith("@") ? agent : `@${agent}`;
+
+  const res = await api<Route>(rc, "POST", "/api/routes", body);
+  if (res.ok) {
+    console.log(`\n  ${c.green}Created route ${res.data.name}${c.reset}\n`);
+  } else {
+    console.log(`\n  ${c.red}Error: ${(res.data as any).error}${c.reset}\n`);
+  }
+}
+
+async function actionRouteList(rc: BoardRC) {
+  const res = await api<Route[]>(rc, "GET", "/api/routes");
+  if (res.ok) {
+    console.log();
+    console.log(renderRouteList(res.data));
+    console.log();
+  }
+}
+
+async function actionOrg(rc: BoardRC) {
+  const [teamsRes, routesRes] = await Promise.all([
+    api<(Team & { members?: TeamMember[] })[]>(rc, "GET", "/api/teams?include=members"),
+    api<Route[]>(rc, "GET", "/api/routes"),
+  ]);
+  console.log();
+  console.log(renderOrg(
+    teamsRes.ok ? teamsRes.data : [],
+    routesRes.ok ? routesRes.data : [],
+  ));
+  console.log();
+}
+
 // === Main menu ===
 
 function showMenu() {
-  console.log(`  ${c.bold}1${c.reset} ${c.dim}·${c.reset} Spawn agent`);
-  console.log(`  ${c.bold}2${c.reset} ${c.dim}·${c.reset} Respawn agent`);
-  console.log(`  ${c.bold}3${c.reset} ${c.dim}·${c.reset} View feed`);
-  console.log(`  ${c.bold}4${c.reset} ${c.dim}·${c.reset} Agent status`);
-  console.log(`  ${c.bold}5${c.reset} ${c.dim}·${c.reset} Kill agent`);
-  console.log(`  ${c.bold}6${c.reset} ${c.dim}·${c.reset} Merge branch`);
-  console.log(`  ${c.bold}7${c.reset} ${c.dim}·${c.reset} Briefing`);
-  console.log(`  ${c.bold}8${c.reset} ${c.dim}·${c.reset} Logs`);
-  console.log(`  ${c.bold}9${c.reset} ${c.dim}·${c.reset} Post as @admin`);
-  console.log(`  ${c.bold}q${c.reset} ${c.dim}·${c.reset} Quit`);
+  console.log(`  ${c.bold}1${c.reset}  ${c.dim}·${c.reset} Spawn agent`);
+  console.log(`  ${c.bold}2${c.reset}  ${c.dim}·${c.reset} Respawn agent`);
+  console.log(`  ${c.bold}3${c.reset}  ${c.dim}·${c.reset} View feed`);
+  console.log(`  ${c.bold}4${c.reset}  ${c.dim}·${c.reset} Agent status`);
+  console.log(`  ${c.bold}5${c.reset}  ${c.dim}·${c.reset} Kill agent`);
+  console.log(`  ${c.bold}6${c.reset}  ${c.dim}·${c.reset} Merge branch`);
+  console.log(`  ${c.bold}7${c.reset}  ${c.dim}·${c.reset} Briefing`);
+  console.log(`  ${c.bold}8${c.reset}  ${c.dim}·${c.reset} Logs`);
+  console.log(`  ${c.bold}9${c.reset}  ${c.dim}·${c.reset} Post as @admin`);
+  console.log(`  ${c.bold}10${c.reset} ${c.dim}·${c.reset} Create team`);
+  console.log(`  ${c.bold}11${c.reset} ${c.dim}·${c.reset} List teams`);
+  console.log(`  ${c.bold}12${c.reset} ${c.dim}·${c.reset} Show team`);
+  console.log(`  ${c.bold}13${c.reset} ${c.dim}·${c.reset} Create route`);
+  console.log(`  ${c.bold}14${c.reset} ${c.dim}·${c.reset} List routes`);
+  console.log(`  ${c.bold}15${c.reset} ${c.dim}·${c.reset} Org overview`);
+  console.log(`  ${c.bold}q${c.reset}  ${c.dim}·${c.reset} Quit`);
   console.log();
 }
 
@@ -470,6 +565,24 @@ export async function startInteractive() {
       case "9":
         await actionPost(rc, rl);
         break;
+      case "10":
+        await actionTeamCreate(rc, rl);
+        break;
+      case "11":
+        await actionTeamList(rc);
+        break;
+      case "12":
+        await actionTeamShow(rc, rl);
+        break;
+      case "13":
+        await actionRouteCreate(rc, rl);
+        break;
+      case "14":
+        await actionRouteList(rc);
+        break;
+      case "15":
+        await actionOrg(rc);
+        break;
       case "q":
       case "Q":
         console.log(`\n  ${c.dim}Server still running in background. Run \`board\` to reconnect.${c.reset}\n`);
@@ -482,7 +595,7 @@ export async function startInteractive() {
         showMenu();
         break;
       default:
-        console.log(`\n  ${c.dim}Unknown option. Pick 1-9 or q.${c.reset}\n`);
+        console.log(`\n  ${c.dim}Unknown option. Pick 1-15 or q.${c.reset}\n`);
     }
 
     loop();

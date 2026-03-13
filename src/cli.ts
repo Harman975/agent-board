@@ -18,9 +18,14 @@ import {
   renderDagTree,
   renderDagSummary,
   renderPromoteSummary,
+  renderTeam,
+  renderTeamList,
+  renderRoute,
+  renderRouteList,
+  renderOrg,
   type SpawnInfo,
 } from "./render.js";
-import type { Agent, DagCommit, Post, RankedPost } from "./types.js";
+import type { Agent, DagCommit, Post, RankedPost, Team, TeamMember, Route } from "./types.js";
 import type { BriefingSummary } from "./supervision.js";
 import type { PostThread } from "./posts.js";
 import type { DagSummary, PromoteResult } from "./gitdag.js";
@@ -901,6 +906,164 @@ dag
       process.exit(1);
     }
     console.log(renderDagSummary(res.data));
+  });
+
+// --- board team ---
+const team = program.command("team").description("Manage teams");
+
+team
+  .command("create <name>")
+  .description("Create a new team")
+  .option("--manager <handle>", "Team manager handle")
+  .option("--mission <mission>", "Team mission")
+  .action(async (name: string, opts: { manager?: string; mission?: string }) => {
+    const rc = requireRC();
+    const res = await api<Team>(rc, "POST", "/api/teams", {
+      name,
+      manager: opts.manager,
+      mission: opts.mission,
+    });
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(`Created team ${res.data.name}`);
+    console.log(renderTeam(res.data));
+  });
+
+team
+  .command("list")
+  .description("List all teams")
+  .action(async () => {
+    const rc = requireRC();
+    const res = await api<Team[]>(rc, "GET", "/api/teams");
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(renderTeamList(res.data));
+  });
+
+team
+  .command("show <name>")
+  .description("Show team details")
+  .action(async (name: string) => {
+    const rc = requireRC();
+    const res = await api<Team & { members?: TeamMember[] }>(
+      rc, "GET", `/api/teams/${encodeURIComponent(name)}`
+    );
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(renderTeam(res.data));
+  });
+
+team
+  .command("add <name> <handle>")
+  .description("Add a member to a team")
+  .action(async (name: string, handle: string) => {
+    const rc = requireRC();
+    const h = handle.startsWith("@") ? handle : `@${handle}`;
+    const res = await api<TeamMember>(
+      rc, "POST", `/api/teams/${encodeURIComponent(name)}/members`, { agent_handle: h }
+    );
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(`Added ${h} to team ${name}`);
+  });
+
+team
+  .command("remove <name> <handle>")
+  .description("Remove a member from a team")
+  .action(async (name: string, handle: string) => {
+    const rc = requireRC();
+    const h = handle.startsWith("@") ? handle : `@${handle}`;
+    const res = await api(
+      rc, "DELETE", `/api/teams/${encodeURIComponent(name)}/members/${encodeURIComponent(h)}`
+    );
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(`Removed ${h} from team ${name}`);
+  });
+
+// --- board route ---
+const route = program.command("route").description("Manage routes");
+
+route
+  .command("create <name>")
+  .description("Create a new route")
+  .option("--team <team>", "Team name")
+  .option("--agent <handle>", "Agent handle")
+  .action(async (name: string, opts: { team?: string; agent?: string }) => {
+    const rc = requireRC();
+    const res = await api<Route>(rc, "POST", "/api/routes", {
+      name,
+      team_name: opts.team,
+      agent_handle: opts.agent,
+    });
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(`Created route ${res.data.name}`);
+    console.log(renderRoute(res.data));
+  });
+
+route
+  .command("list")
+  .description("List all routes")
+  .option("--team <team>", "Filter by team")
+  .action(async (opts: { team?: string }) => {
+    const rc = requireRC();
+    const qs = opts.team ? `?team=${encodeURIComponent(opts.team)}` : "";
+    const res = await api<Route[]>(rc, "GET", `/api/routes${qs}`);
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(renderRouteList(res.data));
+  });
+
+route
+  .command("update <id>")
+  .description("Update a route")
+  .option("--status <status>", "New status (exploring, chosen, abandoned)")
+  .action(async (id: string, opts: { status?: string }) => {
+    const rc = requireRC();
+    const body: Record<string, string> = {};
+    if (opts.status) body.status = opts.status;
+    const res = await api<Route>(rc, "PATCH", `/api/routes/${encodeURIComponent(id)}`, body);
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(`Updated route ${res.data.name}`);
+    console.log(renderRoute(res.data));
+  });
+
+// --- board org ---
+program
+  .command("org")
+  .description("Bird's-eye view of all teams and routes")
+  .action(async () => {
+    const rc = requireRC();
+    const [teamsRes, routesRes] = await Promise.all([
+      api<(Team & { members?: TeamMember[] })[]>(rc, "GET", "/api/teams?include=members"),
+      api<Route[]>(rc, "GET", "/api/routes"),
+    ]);
+    if (!teamsRes.ok) {
+      console.error(`Error: ${(teamsRes.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(renderOrg(
+      teamsRes.ok ? teamsRes.data : [],
+      routesRes.ok ? routesRes.data : [],
+    ));
   });
 
 // If no subcommand given, launch interactive mode
