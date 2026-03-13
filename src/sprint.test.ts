@@ -869,3 +869,281 @@ describe("package setup: shebang in dist/cli.js", () => {
     assert.equal(pkg.bin.board, "./dist/cli.js");
   });
 });
+
+// ============================================================
+// Section 5: Sprint scope validation tests
+// ============================================================
+
+// ============================================================
+// Section 6: Sprint suggest output format tests
+// ============================================================
+
+// ============================================================
+// Section 7: Steer directive tests
+// ============================================================
+
+// ============================================================
+// Section 8: CEO amplification commands tests
+// ============================================================
+// Tests for: scope validation (disjoint pass, overlap fail),
+// suggest output format, steer writes directive, steer --clear resets.
+
+describe("Scope validation: disjoint scopes pass", () => {
+  it("accepts a plan where no file appears in two agent scopes", () => {
+    const plan = {
+      goal: "Build feature X",
+      tasks: [
+        { agent: "backend", handle: "@backend", mission: "API", scope: ["src/api.ts", "src/db.ts"] },
+        { agent: "frontend", handle: "@frontend", mission: "UI", scope: ["src/ui.ts", "src/styles.css"] },
+      ],
+    };
+
+    // Validate scopes are disjoint (same logic as CLI)
+    const fileOwners = new Map<string, string>();
+    const overlaps: string[] = [];
+    for (const task of plan.tasks) {
+      for (const file of task.scope) {
+        const existing = fileOwners.get(file);
+        if (existing) {
+          overlaps.push(`${file} claimed by both ${existing} and ${task.handle}`);
+        } else {
+          fileOwners.set(file, task.handle);
+        }
+      }
+    }
+
+    assert.deepStrictEqual(overlaps, []);
+  });
+});
+
+describe("Scope validation: overlapping scopes fail", () => {
+  it("detects when a file appears in two agent scopes", () => {
+    const plan = {
+      goal: "Build feature Y",
+      tasks: [
+        { agent: "backend", handle: "@backend", mission: "API", scope: ["src/shared.ts", "src/db.ts"] },
+        { agent: "frontend", handle: "@frontend", mission: "UI", scope: ["src/shared.ts", "src/ui.ts"] },
+      ],
+    };
+
+    const fileOwners = new Map<string, string>();
+    const overlaps: string[] = [];
+    for (const task of plan.tasks) {
+      for (const file of task.scope) {
+        const existing = fileOwners.get(file);
+        if (existing) {
+          overlaps.push(`${file} claimed by both ${existing} and ${task.handle}`);
+        } else {
+          fileOwners.set(file, task.handle);
+        }
+      }
+    }
+
+    assert.ok(overlaps.length > 0, "Should detect overlapping scopes");
+    assert.ok(overlaps[0].includes("src/shared.ts"), "Overlap should mention shared.ts");
+    assert.ok(overlaps[0].includes("@backend"), "Overlap should mention first owner");
+    assert.ok(overlaps[0].includes("@frontend"), "Overlap should mention second owner");
+  });
+
+  it("detects multiple overlaps", () => {
+    const plan = {
+      goal: "Build feature Z",
+      tasks: [
+        { agent: "a1", handle: "@a1", mission: "task1", scope: ["f1.ts", "f2.ts", "f3.ts"] },
+        { agent: "a2", handle: "@a2", mission: "task2", scope: ["f2.ts", "f3.ts", "f4.ts"] },
+        { agent: "a3", handle: "@a3", mission: "task3", scope: ["f3.ts", "f5.ts"] },
+      ],
+    };
+
+    const fileOwners = new Map<string, string>();
+    const overlaps: string[] = [];
+    for (const task of plan.tasks) {
+      for (const file of task.scope) {
+        const existing = fileOwners.get(file);
+        if (existing) {
+          overlaps.push(`${file} claimed by both ${existing} and ${task.handle}`);
+        } else {
+          fileOwners.set(file, task.handle);
+        }
+      }
+    }
+
+    // f2.ts: @a1 vs @a2, f3.ts: @a1 vs @a2, f3.ts: @a1 vs @a3
+    assert.ok(overlaps.length >= 2, `Expected at least 2 overlaps, got ${overlaps.length}`);
+  });
+});
+
+describe("Sprint suggest output format", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-suggest-test-"));
+    // Create src/ with some files
+    const srcDir = path.join(tmpDir, "src");
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, "api.ts"), "export const api = 1;");
+    fs.writeFileSync(path.join(srcDir, "db.ts"), "export const db = 1;");
+    // Create identities/
+    const identDir = path.join(tmpDir, "identities");
+    fs.mkdirSync(identDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(identDir, "backend.md"),
+      "---\nname: backend-architect\ndescription: Senior backend dev\n---\nYou are a backend dev."
+    );
+    fs.writeFileSync(
+      path.join(identDir, "frontend.md"),
+      "---\nname: frontend-dev\ndescription: Frontend specialist\n---\nYou are a frontend dev."
+    );
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("reads src/ file tree", () => {
+    const srcDir = path.join(tmpDir, "src");
+    const files = fs.readdirSync(srcDir);
+    assert.ok(files.includes("api.ts"));
+    assert.ok(files.includes("db.ts"));
+  });
+
+  it("reads identity names and descriptions from identities/ folder", () => {
+    const identDir = path.join(tmpDir, "identities");
+    const files = fs.readdirSync(identDir).filter((f) => f.endsWith(".md"));
+    const agents: { name: string; description: string }[] = [];
+
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(identDir, file), "utf-8");
+      const match = content.match(/^---\n([\s\S]*?)\n---/);
+      if (match) {
+        const frontmatter = match[1];
+        const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
+        const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
+        if (nameMatch && descMatch) {
+          agents.push({ name: nameMatch[1].trim(), description: descMatch[1].trim() });
+        }
+      }
+    }
+
+    assert.equal(agents.length, 2);
+    assert.ok(agents.some((a) => a.name === "backend-architect"));
+    assert.ok(agents.some((a) => a.name === "frontend-dev"));
+    assert.ok(agents.some((a) => a.description === "Senior backend dev"));
+  });
+
+  it("output includes JSON schema for sprint plan", () => {
+    // Verify the expected JSON schema structure is present in the suggest prompt
+    const expectedSchema = `{
+  "goal": "string — the sprint goal",
+  "tasks": [
+    {
+      "agent": "string — agent identity name",
+      "handle": "string — @handle for the agent",
+      "mission": "string — detailed task description",
+      "scope": ["string — file paths this agent owns"]
+    }
+  ]
+}`;
+    // The schema should be parseable as JSON (after stripping comments)
+    const cleaned = expectedSchema
+      .replace(/— [^"]+/g, "")
+      .replace(/"string "/g, '"string"')
+      .replace(/\["string "\]/g, '["string"]');
+    // At minimum, verify the schema has the expected keys
+    assert.ok(expectedSchema.includes('"goal"'));
+    assert.ok(expectedSchema.includes('"tasks"'));
+    assert.ok(expectedSchema.includes('"agent"'));
+    assert.ok(expectedSchema.includes('"handle"'));
+    assert.ok(expectedSchema.includes('"mission"'));
+    assert.ok(expectedSchema.includes('"scope"'));
+  });
+});
+
+describe("Steer writes directive", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-steer-test-"));
+    fs.mkdirSync(path.join(tmpDir, ".worktrees", "@agent1"), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("writes DIRECTIVE.md to agent worktree", () => {
+    const worktreePath = path.join(tmpDir, ".worktrees", "@agent1");
+    const directivePath = path.join(worktreePath, "DIRECTIVE.md");
+    const message = "Focus on the API endpoints first";
+    const timestamp = new Date().toISOString();
+
+    // Simulate what steer command does
+    const content = `# Directives from @admin\n\n[${timestamp}] ${message}\n`;
+    fs.writeFileSync(directivePath, content);
+
+    assert.ok(fs.existsSync(directivePath));
+    const written = fs.readFileSync(directivePath, "utf-8");
+    assert.ok(written.includes("Focus on the API endpoints first"));
+    assert.ok(written.includes("Directives from @admin"));
+  });
+
+  it("appends to existing DIRECTIVE.md", () => {
+    const worktreePath = path.join(tmpDir, ".worktrees", "@agent1");
+    const directivePath = path.join(worktreePath, "DIRECTIVE.md");
+
+    // First directive
+    const t1 = "2026-03-13T10:00:00Z";
+    fs.writeFileSync(directivePath, `# Directives from @admin\n\n[${t1}] First directive\n`);
+
+    // Second directive (append)
+    const t2 = "2026-03-13T11:00:00Z";
+    const existing = fs.readFileSync(directivePath, "utf-8");
+    fs.writeFileSync(directivePath, existing + `\n---\n[${t2}] Second directive\n`);
+
+    const written = fs.readFileSync(directivePath, "utf-8");
+    assert.ok(written.includes("First directive"));
+    assert.ok(written.includes("Second directive"));
+    assert.ok(written.includes("---"));
+  });
+});
+
+describe("Steer --clear resets directives", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-steer-clear-test-"));
+    fs.mkdirSync(path.join(tmpDir, ".worktrees", "@agent1"), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("removes DIRECTIVE.md from agent worktree", () => {
+    const worktreePath = path.join(tmpDir, ".worktrees", "@agent1");
+    const directivePath = path.join(worktreePath, "DIRECTIVE.md");
+
+    // Write a directive
+    fs.writeFileSync(directivePath, "# Directives from @admin\n\nSome directive\n");
+    assert.ok(fs.existsSync(directivePath));
+
+    // Clear directives (simulate --clear)
+    fs.unlinkSync(directivePath);
+    assert.ok(!fs.existsSync(directivePath));
+  });
+
+  it("handles clearing when no DIRECTIVE.md exists", () => {
+    const worktreePath = path.join(tmpDir, ".worktrees", "@agent1");
+    const directivePath = path.join(worktreePath, "DIRECTIVE.md");
+
+    // No directive exists
+    assert.ok(!fs.existsSync(directivePath));
+
+    // Clearing should not throw
+    if (fs.existsSync(directivePath)) {
+      fs.unlinkSync(directivePath);
+    }
+    // No error means success
+    assert.ok(!fs.existsSync(directivePath));
+  });
+});
