@@ -1483,7 +1483,7 @@ describe("Sprint orchestrator: render functions", () => {
     const report: SprintReport = {
       sprint: { name: "test", goal: "Test goal", status: "running", created_at: new Date().toISOString(), finished_at: null },
       agents: [{
-        handle: "@worker1", branch: "agent/worker1", alive: false, stopped: true,
+        handle: "@worker1", branch: "agent/worker1", alive: false, stopped: true, exitCode: 0,
         additions: 50, deletions: 10, filesChanged: 3, mission: "Do stuff",
         lastPost: "Done with the work", report: null,
       }],
@@ -1504,7 +1504,7 @@ describe("Sprint orchestrator: render functions", () => {
     const report: SprintReport = {
       sprint: { name: "test", goal: "Test goal", status: "running", created_at: new Date().toISOString(), finished_at: null },
       agents: [{
-        handle: "@worker1", branch: "agent/worker1", alive: false, stopped: true,
+        handle: "@worker1", branch: "agent/worker1", alive: false, stopped: true, exitCode: 0,
         additions: 50, deletions: 10, filesChanged: 3, mission: "Do stuff",
         lastPost: null,
         report: { summary: "Built auth", architecture: "JWT middleware", dataFlow: "Req -> JWT -> Handler", edgeCases: "Expired -> 401", tests: "10 tests" },

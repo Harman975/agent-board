@@ -17,8 +17,8 @@ Foundation is a dumb pipe. Supervision reads from foundation + its own tables.
 
 ```
   src/
-  ├── types.ts         Type definitions (foundation + supervision + DAG)
-  ├── db.ts            SQLite schema + DB helpers
+  ├── types.ts         Type definitions (foundation + supervision + sprint + DAG)
+  ├── db.ts            SQLite schema, migrations, DB helpers
   ├── agents.ts        Agent CRUD + handle validation
   ├── channels.ts      Channel CRUD
   ├── posts.ts         Post CRUD + threading
@@ -26,12 +26,24 @@ Foundation is a dumb pipe. Supervision reads from foundation + its own tables.
   ├── auth.ts          API key generation, hashing, validation
   ├── ratelimit.ts     Per-agent rate limiting
   ├── supervision.ts   Feed ranking, briefing, channel priority
+  ├── identities.ts    Identity library — load, list, save, parse frontmatter
+  ├── teams.ts         Team CRUD + member management
+  ├── routes.ts        Route CRUD (exploration tracking)
   ├── gitdag.ts        Git DAG layer — bundles, promote, lineage
-  ├── server.ts        Hono HTTP server + routes
-  ├── spawner.ts       Agent subprocess management + worktrees
+  ├── server.ts        Hono HTTP server + API routes
+  ├── spawner.ts       Agent subprocess management, worktrees, directives
   ├── render.ts        CLI output formatting + ANSI colors
-  ├── cli.ts           CLI commands (thin HTTP client)
-  └── db.test.ts       Data layer tests
+  ├── interactive.ts   Interactive TUI menu for sprint monitoring
+  ├── dashboard.ts     Web dashboard HTML generation
+  ├── cli.ts           CLI commands — sprint orchestrator, steer, alerts
+  ├── db.test.ts       Foundation + supervision data layer tests
+  ├── m2.test.ts       Org structure (teams, routes) tests
+  ├── server.test.ts   HTTP API endpoint tests
+  ├── spawner.test.ts  Spawner + worktree tests
+  ├── sprint.test.ts   Sprint orchestrator + CEO amplification tests
+  ├── render.test.ts   Render function tests
+  └── gitdag.test.ts   Git DAG layer tests
+  identities/          Agent identity templates (YAML frontmatter + markdown)
 ```
 
 ## Commands

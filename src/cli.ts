@@ -116,7 +116,12 @@ async function api<T>(
     throw err;
   }
 
-  const data = (await res.json()) as T;
+  let data: T;
+  try {
+    data = (await res.json()) as T;
+  } catch {
+    throw new Error(`Server returned non-JSON response (${res.status} ${res.statusText})`);
+  }
   return { ok: res.ok, status: res.status, data };
 }
 
@@ -155,7 +160,7 @@ async function runPreFlight(
   let testsPass = false;
   if (!opts.skipTests) {
     try {
-      execSync("npm test", { cwd: projectDir, stdio: "pipe" });
+      execSync("npm test", { cwd: projectDir, stdio: "pipe", timeout: 120_000 });
       testsPass = true;
     } catch {
       testsPass = false;
@@ -1411,7 +1416,7 @@ program
 
       // Run tests after merge
       try {
-        execSync("npm test", { cwd: projectDir, stdio: "pipe" });
+        execSync("npm test", { cwd: projectDir, stdio: "pipe", timeout: 120_000 });
         console.log(`  Tests pass after merging ${handle}.`);
         merged.push(handle);
       } catch {
@@ -1490,10 +1495,16 @@ async function buildSprintReport(
   let totalDeletions = 0;
   let totalFiles = 0;
 
+  const { markSpawnStopped: markStopped } = await import("./spawner.js");
   for (const sa of sprintAgents) {
     const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
     const alive = spawn && !spawn.stopped_at ? isProcessAlive(spawn.pid) : false;
     const stopped = spawn ? !!spawn.stopped_at || !alive : true;
+
+    // Auto-mark dead agents as stopped (process exited but exit handler didn't fire)
+    if (spawn && !spawn.stopped_at && !alive) {
+      markStopped(db, sa.agent_handle);
+    }
 
     // Get last post
     const lastPost = db.prepare(
@@ -1542,6 +1553,7 @@ async function buildSprintReport(
       branch: spawn?.branch || null,
       alive,
       stopped,
+      exitCode: spawn?.exit_code ?? null,
       additions,
       deletions,
       filesChanged,
@@ -1901,7 +1913,7 @@ sprint
     // Run tests on main
     console.log("\nRunning tests on main...");
     try {
-      execSync("npm test", { cwd: projectDir, stdio: "pipe" });
+      execSync("npm test", { cwd: projectDir, stdio: "pipe", timeout: 120_000 });
       console.log("Tests pass on main.");
     } catch {
       console.error("Tests fail on main. Fix before merging.");
@@ -1959,7 +1971,7 @@ sprint
       }
 
       try {
-        execSync("npm test", { cwd: projectDir, stdio: "pipe" });
+        execSync("npm test", { cwd: projectDir, stdio: "pipe", timeout: 120_000 });
         console.log(`  Tests pass after merging ${handle}.`);
         merged.push(handle);
       } catch {
@@ -2044,6 +2056,80 @@ program
     }
   });
 
+// --- board cleanup ---
+program
+  .command("cleanup")
+  .description("Delete merged agent branches and prune worktrees")
+  .option("--dry-run", "Show what would be deleted without doing it")
+  .action(async (opts: { dryRun?: boolean }) => {
+    const projectDir = process.cwd();
+    const { listSpawns } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+    const spawns = listSpawns(db);
+    db.close();
+
+    // Find agent branches (strip *, + prefixes from git branch output)
+    const parseBranches = (output: string) =>
+      output.split("\n").map((b) => b.trim().replace(/^[*+] /, "")).filter((b) => b.startsWith("agent/"));
+
+    const allBranches = parseBranches(
+      execSync("git branch", { cwd: projectDir, encoding: "utf-8" })
+    );
+
+    // Check which are merged into current branch
+    const mergedSet = new Set(parseBranches(
+      execSync("git branch --merged", { cwd: projectDir, encoding: "utf-8" })
+    ));
+
+    // Don't delete branches with actively running agents
+    const activeBranches = new Set(
+      spawns.filter((s) => !s.stopped_at && s.branch).map((s) => s.branch!)
+    );
+
+    const toDelete = allBranches.filter((b) => mergedSet.has(b) && !activeBranches.has(b));
+    const remaining = allBranches.filter((b) => !toDelete.includes(b));
+
+    if (toDelete.length === 0) {
+      console.log("No merged agent branches to clean up.");
+      return;
+    }
+
+    console.log(`Found ${toDelete.length} merged agent branch${toDelete.length === 1 ? "" : "es"}:`);
+    for (const b of toDelete) {
+      const handle = "@" + b.replace("agent/", "");
+      const worktreePath = path.join(projectDir, ".worktrees", handle);
+      console.log(`  ${opts.dryRun ? "[dry-run] " : ""}delete ${b}`);
+      if (!opts.dryRun) {
+        // Remove worktree first (branch can't be deleted while checked out)
+        if (fs.existsSync(worktreePath)) {
+          try {
+            execSync(`git worktree remove "${worktreePath}" --force`, { cwd: projectDir, stdio: "pipe" });
+          } catch {
+            try { fs.rmSync(worktreePath, { recursive: true, force: true }); } catch { /* ignore */ }
+          }
+        }
+        try {
+          execSync(`git branch -D ${b}`, { cwd: projectDir, stdio: "pipe" });
+        } catch {
+          console.error(`    Failed to delete ${b}`);
+        }
+      }
+    }
+
+    // Prune any remaining stale worktree references
+    if (!opts.dryRun) {
+      try {
+        execSync("git worktree prune", { cwd: projectDir, stdio: "pipe" });
+      } catch { /* ignore */ }
+      console.log("Done.");
+    }
+
+    if (remaining.length > 0) {
+      console.log(`\n${remaining.length} unmerged branch${remaining.length === 1 ? "" : "es"} kept: ${remaining.join(", ")}`);
+    }
+  });
+
 // --- board portfolio ---
 program
   .command("portfolio")
@@ -2101,11 +2187,25 @@ program
       });
     }
 
-    // 2. Crashed agents (not stopped but process dead)
+    // 2. Dead agents (not stopped but process dead)
+    const { markSpawnStopped } = await import("./spawner.js");
     const spawns = listSpawns(db);
     for (const s of spawns) {
-      if (s.stopped_at) continue;
+      if (s.stopped_at) {
+        // Already stopped — check if it was a crash (exit_code > 0)
+        if (s.exit_code !== null && s.exit_code > 0) {
+          alerts.push({
+            type: "crashed",
+            agent: s.agent_handle,
+            message: `Exited with code ${s.exit_code} (started ${s.started_at})`,
+            time: s.stopped_at,
+          });
+        }
+        continue;
+      }
       if (!isProcessAlive(s.pid)) {
+        // Process dead but not marked stopped — auto-mark
+        markSpawnStopped(db, s.agent_handle);
         alerts.push({
           type: "crashed",
           agent: s.agent_handle,

@@ -187,6 +187,7 @@ export interface SprintAgentReport {
   branch: string | null;
   alive: boolean;
   stopped: boolean;
+  exitCode: number | null;
   additions: number;
   deletions: number;
   filesChanged: number;

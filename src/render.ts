@@ -438,12 +438,16 @@ function formatDuration(startIso: string, endIso?: string | null): string {
   return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
 }
 
+function agentStatusLabel(agent: SprintAgentReport): string {
+  if (agent.stopped && agent.exitCode === 0) return `${c.green}\u2713 completed${c.reset}`;
+  if (agent.stopped && agent.exitCode !== null && agent.exitCode > 0) return `${c.red}crashed (${agent.exitCode})${c.reset}`;
+  if (agent.stopped) return `${c.green}\u2713 stopped${c.reset}`;
+  if (agent.alive) return `${c.green}running${c.reset}`;
+  return `${c.red}dead${c.reset}`;
+}
+
 function renderAgentTileCompact(agent: SprintAgentReport): string {
-  const status = agent.stopped
-    ? `${c.green}\u2713 stopped${c.reset}`
-    : agent.alive
-      ? `${c.green}running${c.reset}`
-      : `${c.red}dead${c.reset}`;
+  const status = agentStatusLabel(agent);
   const stats = `+${agent.additions}/-${agent.deletions}`;
   const files = `${agent.filesChanged} file${agent.filesChanged === 1 ? "" : "s"}`;
   const summary = agent.report?.summary || agent.lastPost || agent.mission || "";
@@ -457,11 +461,7 @@ function renderAgentTileCompact(agent: SprintAgentReport): string {
 }
 
 function renderAgentTileDetailed(agent: SprintAgentReport): string {
-  const status = agent.stopped
-    ? `${c.green}\u2713 stopped${c.reset}`
-    : agent.alive
-      ? `${c.green}running${c.reset}`
-      : `${c.red}dead${c.reset}`;
+  const status = agentStatusLabel(agent);
   const stats = `+${agent.additions}/-${agent.deletions}`;
   const files = `${agent.filesChanged} file${agent.filesChanged === 1 ? "" : "s"}`;
 

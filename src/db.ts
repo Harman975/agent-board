@@ -136,6 +136,17 @@ CREATE INDEX IF NOT EXISTS idx_routes_team ON routes(team_name);
 CREATE INDEX IF NOT EXISTS idx_routes_agent ON routes(agent_handle);
 `;
 
+// === Schema migrations ===
+// Each migration runs once, tracked by schema_version table.
+// Add new migrations at the end — never modify existing ones.
+
+const MIGRATIONS: { version: number; sql: string }[] = [
+  {
+    version: 1,
+    sql: `ALTER TABLE spawns ADD COLUMN exit_code INTEGER;`,
+  },
+];
+
 const DB_FILE = "board.db";
 
 export function getDb(dir?: string): Database.Database {
@@ -146,10 +157,35 @@ export function getDb(dir?: string): Database.Database {
   return db;
 }
 
+function runMigrations(db: Database.Database): void {
+  // Create version table if missing
+  db.exec(`CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+  )`);
+
+  const applied = new Set(
+    (db.prepare("SELECT version FROM schema_version").all() as { version: number }[])
+      .map((r) => r.version)
+  );
+
+  for (const m of MIGRATIONS) {
+    if (applied.has(m.version)) continue;
+    try {
+      db.exec(m.sql);
+    } catch (err: any) {
+      // Ignore "duplicate column" errors from re-running on partially migrated DBs
+      if (!err.message?.includes("duplicate column")) throw err;
+    }
+    db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(m.version);
+  }
+}
+
 export function initDb(dir?: string): Database.Database {
   const db = getDb(dir);
   db.exec(FOUNDATION_SCHEMA);
   db.exec(SUPERVISION_SCHEMA);
+  runMigrations(db);
   return db;
 }
 

@@ -18,6 +18,7 @@ export interface SpawnRecord {
   branch: string | null;
   started_at: string;
   stopped_at: string | null;
+  exit_code: number | null;
 }
 
 export interface SpawnOptions {
@@ -226,12 +227,13 @@ export function updateSpawn(db: Database.Database, record: Omit<SpawnRecord, "st
   `).run(record.pid, record.log_path, record.worktree_path, record.branch, record.agent_handle);
 }
 
-export function markSpawnStopped(db: Database.Database, handle: string): void {
+export function markSpawnStopped(db: Database.Database, handle: string, exitCode?: number | null): void {
   handle = normalizeHandle(handle);
   db.prepare(`
-    UPDATE spawns SET stopped_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+    UPDATE spawns SET stopped_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+      exit_code = ?
     WHERE agent_handle = ? AND stopped_at IS NULL
-  `).run(handle);
+  `).run(exitCode ?? null, handle);
 }
 
 export function getSpawn(db: Database.Database, handle: string): SpawnRecord | null {
@@ -370,7 +372,20 @@ function _spawnProcess(
     }
   );
 
-  const pid = child.pid!;
+  if (!child.pid) {
+    if (logStream !== null) fs.closeSync(logStream);
+    throw new Error(`Failed to spawn claude for ${handle} — is claude installed and on PATH?`);
+  }
+  const pid = child.pid;
+
+  // Listen for spawn errors (e.g., ENOENT when claude binary not found)
+  child.on("error", (err) => {
+    if (logStream !== null) try { fs.closeSync(logStream); } catch { /* ignore */ }
+    markSpawnStopped(db, handle, 1);
+    try {
+      createPost(db, { author: handle, channel: "#status", content: `Spawn error: ${err.message}` });
+    } catch { /* DB may be closed */ }
+  });
 
   // Insert or update spawn record
   if (opts.isRespawn) {
@@ -398,8 +413,8 @@ function _spawnProcess(
   });
 
   child.on("exit", (code) => {
-    if (logStream !== null) fs.closeSync(logStream);
-    markSpawnStopped(db, handle);
+    if (logStream !== null) try { fs.closeSync(logStream); } catch { /* ignore */ }
+    markSpawnStopped(db, handle, code);
     try {
       if (code === 0) {
         createPost(db, { author: handle, channel: "#status", content: "Finished" });
