@@ -8,8 +8,8 @@ import { createPost, getPost, listPosts, getThread } from "./posts.js";
 import { linkCommit } from "./commits.js";
 import { getFeed, getBriefing, setChannelPriority, listChannelPriorities } from "./supervision.js";
 import { pushBundle, fetchBundle, listDagCommits, getLeaves, getChildren, diffCommits, promoteCommit, dagExists, getDagSummary } from "./gitdag.js";
-import { createTeam, getTeam, listTeams, addTeamMember, removeTeamMember, updateTeamStatus } from "./teams.js";
-import { createRoute, listRoutes, updateRouteStatus } from "./routes.js";
+import { createTeam, getTeam, listTeams, addMember, removeMember, updateTeam } from "./teams.js";
+import { createRoute, listRoutes, updateRoute } from "./routes.js";
 import type { ApiKey } from "./types.js";
 import { dashboardHtml } from "./dashboard.js";
 import fs from "fs";
@@ -468,7 +468,7 @@ export function createApp(db: Database.Database, projectDir?: string): Hono<{ Va
       return c.json({ error: "agent_handle is required" }, 400);
     }
     try {
-      const member = addTeamMember(db, c.req.param("name"), body.agent_handle);
+      const member = addMember(db, c.req.param("name"), body.agent_handle);
       return c.json(member, 201);
     } catch (e: any) {
       return c.json({ error: e.message }, 400);
@@ -478,7 +478,7 @@ export function createApp(db: Database.Database, projectDir?: string): Hono<{ Va
   app.delete("/api/teams/:name/members/:handle", (c) => {
     if (!requireAdmin(c)) return c.body(null);
     try {
-      removeTeamMember(db, c.req.param("name"), c.req.param("handle"));
+      removeMember(db, c.req.param("name"), c.req.param("handle"));
       return c.json({ ok: true });
     } catch (e: any) {
       return c.json({ error: e.message }, 404);
@@ -492,7 +492,7 @@ export function createApp(db: Database.Database, projectDir?: string): Hono<{ Va
       return c.json({ error: "status is required" }, 400);
     }
     try {
-      const team = updateTeamStatus(db, c.req.param("name"), body.status);
+      const team = updateTeam(db, c.req.param("name"), { status: body.status });
       if (!team) return c.json({ error: "Team not found" }, 404);
       return c.json(team);
     } catch (e: any) {
@@ -532,7 +532,7 @@ export function createApp(db: Database.Database, projectDir?: string): Hono<{ Va
       return c.json({ error: "status is required" }, 400);
     }
     try {
-      const route = updateRouteStatus(db, c.req.param("id"), body.status);
+      const route = updateRoute(db, c.req.param("id"), { status: body.status });
       if (!route) return c.json({ error: "Route not found" }, 404);
       return c.json(route);
     } catch (e: any) {
