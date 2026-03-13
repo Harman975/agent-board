@@ -37,6 +37,20 @@
 **Effort:** L
 **Depends on:** Identity library, validate-sprint, merge-sprint
 
+### Ship as npm package (P1)
+**What:** Publish AgentBoard to npm as `agentboard` (or `agent-board`). Users install with `npm install -g agentboard` and get the `board` command globally. Add proper bin entry, shebang, and ensure all dependencies are bundled correctly.
+**Why:** Nobody can use this unless they can install it. The bin entry already exists in package.json (`"board": "./dist/cli.js"`), but we need: npm publish config, a shebang line in the CLI entry, verify the built dist/ works standalone, and pick the package name.
+**Context:** tsup already builds ESM output to dist/. The `board` bin entry points to `dist/cli.js`. Need to: (1) add `#!/usr/bin/env node` shebang to CLI output (tsup banner option), (2) set `"files": ["dist"]` in package.json so only built output ships, (3) verify `npx agentboard` works, (4) `npm publish`. Also need to decide: `agentboard` vs `agent-board` vs `@agentboard/cli` for the package name.
+**Effort:** S
+**Depends on:** Nothing (can do anytime)
+
+### `board init` guided setup (P1)
+**What:** Make `board init` a guided onboarding experience for new users. Currently it just creates a DB and prints a message. It should: create DB, start the server (or prompt to), create the admin key, print a "you're ready" message with next steps, and optionally create a default set of identities.
+**Why:** First-run experience IS the product experience. If `board init` is confusing, people leave. A 30-second guided setup that ends with "try `board sprint`" is the onramp.
+**Context:** Current `board init` in cli.ts creates DB + prints admin key. Needs: (1) auto-start server in background (or check if already running), (2) create `.boardrc` with URL + admin key, (3) print clear next steps, (4) optionally scaffold `identities/` with 3-4 starter identities (backend-architect, test-engineer, frontend-dev, code-reviewer).
+**Effort:** S
+**Depends on:** Identity library (for starter identities, but init can work without them)
+
 ---
 
 ## Sprint Polish — P2
