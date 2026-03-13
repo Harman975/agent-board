@@ -6,4 +6,6 @@ dist/
 *.db-shm
 .boardrc
 .worktrees/
+.dag/
+.dag-promote.patch
 .board-server.log

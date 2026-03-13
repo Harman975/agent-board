@@ -85,3 +85,13 @@ export interface CommitRow {
 export interface RankedPost extends Post {
   priority: number;
 }
+
+// === DAG types ===
+
+export interface DagCommit {
+  hash: string;
+  parent_hash: string | null;
+  agent_handle: string;
+  message: string;
+  created_at: string;
+}

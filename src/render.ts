@@ -1,6 +1,7 @@
-import type { Agent, Post, RankedPost } from "./types.js";
+import type { Agent, DagCommit, Post, RankedPost } from "./types.js";
 import type { PostThread } from "./posts.js";
 import type { BriefingSummary } from "./supervision.js";
+import type { DagSummary, PromoteResult } from "./gitdag.js";
 
 // === ANSI colors — respects NO_COLOR env var ===
 
@@ -218,5 +219,114 @@ export function renderStatus(info: {
     lines.push(`  Spawned:`);
     lines.push(renderSpawnList(info.spawns));
   }
+  return lines.join("\n");
+}
+
+// === DAG rendering ===
+
+function colorHash(hash: string): string {
+  return `${c.yellow}${hash.slice(0, 8)}${c.reset}`;
+}
+
+export function renderDagCommit(commit: DagCommit): string {
+  const time = colorTime(formatTime(commit.created_at));
+  const parent = commit.parent_hash ? `${c.dim}← ${commit.parent_hash.slice(0, 8)}${c.reset}` : `${c.dim}(root)${c.reset}`;
+  return `  ${colorHash(commit.hash)}  ${colorHandle(commit.agent_handle)}  ${parent}  ${time}\n    ${commit.message}`;
+}
+
+export function renderDagLog(commits: DagCommit[]): string {
+  if (commits.length === 0) return `  ${c.dim}No DAG commits.${c.reset}`;
+  return commits.map(renderDagCommit).join("\n\n");
+}
+
+/**
+ * Render a DAG tree showing commit ancestry.
+ *
+ *   ● abc12345  @auth-mgr  "Implement JWT validation"
+ *   │
+ *   ├── def67890  @auth-mgr  "Add token refresh"
+ *   └── 11223344  @auth-mgr  "Try session-based instead"  ★ leaf
+ */
+export function renderDagTree(
+  commits: DagCommit[],
+  leaves: Set<string>
+): string {
+  if (commits.length === 0) return `  ${c.dim}No DAG commits.${c.reset}`;
+
+  // Build parent→children map
+  const childrenMap = new Map<string, DagCommit[]>();
+  const roots: DagCommit[] = [];
+
+  for (const commit of commits) {
+    if (!commit.parent_hash) {
+      roots.push(commit);
+    } else {
+      const children = childrenMap.get(commit.parent_hash) ?? [];
+      children.push(commit);
+      childrenMap.set(commit.parent_hash, children);
+    }
+  }
+
+  function renderNode(commit: DagCommit, prefix: string, isLast: boolean): string[] {
+    const connector = prefix === "" ? "●" : isLast ? "└──" : "├──";
+    const leaf = leaves.has(commit.hash) ? `  ${c.green}★ leaf${c.reset}` : "";
+    const line = `${prefix}${connector} ${colorHash(commit.hash)}  ${colorHandle(commit.agent_handle)}  "${commit.message}"${leaf}`;
+
+    const lines = [line];
+    const children = childrenMap.get(commit.hash) ?? [];
+    const childPrefix = prefix === "" ? "" : prefix + (isLast ? "    " : "│   ");
+
+    if (children.length > 0 && prefix === "") {
+      lines.push(`${childPrefix}│`);
+    }
+
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const last = i === children.length - 1;
+      lines.push(...renderNode(child, childPrefix, last));
+    }
+
+    return lines;
+  }
+
+  const allLines: string[] = [];
+  for (const root of roots) {
+    allLines.push(...renderNode(root, "", true));
+    allLines.push("");
+  }
+
+  return allLines.join("\n");
+}
+
+export function renderPromoteSummary(result: PromoteResult): string {
+  return [
+    `${c.bold}Promoted to main${c.reset}`,
+    `  DAG commit:  ${colorHash(result.originalHash)}`,
+    `  Main commit: ${colorHash(result.newHash)}`,
+    `  Message:     ${result.message}`,
+  ].join("\n");
+}
+
+export function renderDagSummary(summary: DagSummary): string {
+  const lines: string[] = [];
+  lines.push(`${c.bold}DAG Summary${c.reset}`);
+  lines.push(`  Commits: ${summary.totalCommits}  Leaves: ${summary.leafCount}`);
+
+  if (summary.agentActivity.length > 0) {
+    lines.push("");
+    lines.push("  Activity:");
+    for (const a of summary.agentActivity) {
+      lines.push(`    ${colorHandle(a.handle)}: ${a.commits} commit${a.commits === 1 ? "" : "s"}`);
+    }
+  }
+
+  if (summary.recentLeaves.length > 0) {
+    lines.push("");
+    lines.push("  Recent leaves:");
+    for (const leaf of summary.recentLeaves) {
+      lines.push(`    ${colorHash(leaf.hash)}  ${colorHandle(leaf.agent_handle)}  "${leaf.message}"`);
+    }
+  }
+
   return lines.join("\n");
 }

@@ -21,6 +21,21 @@ export function normalizeHandle(handle: string): string {
   return handle.startsWith("@") ? handle : `@${handle}`;
 }
 
+const HANDLE_PATTERN = /^@?[a-zA-Z0-9][a-zA-Z0-9-]*$/;
+
+export function validateHandle(handle: string): void {
+  if (!handle || !HANDLE_PATTERN.test(handle)) {
+    throw new Error(
+      `Invalid handle "${handle}": must be alphanumeric with hyphens only (e.g. @auth-mgr)`
+    );
+  }
+  // Prevent excessively long handles (git branch name limit)
+  const clean = handle.replace(/^@/, "");
+  if (clean.length > 50) {
+    throw new Error(`Handle too long (max 50 characters): "${handle}"`);
+  }
+}
+
 export function createAgent(
   db: Database.Database,
   opts: {
@@ -30,6 +45,7 @@ export function createAgent(
     metadata?: Record<string, unknown>;
   }
 ): Agent {
+  validateHandle(opts.handle);
   const handle = normalizeHandle(opts.handle);
 
   const existing = db.prepare("SELECT handle FROM agents WHERE handle = ?").get(handle);

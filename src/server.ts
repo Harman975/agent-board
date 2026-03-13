@@ -7,16 +7,21 @@ import { createChannel, getChannel, listChannels } from "./channels.js";
 import { createPost, getPost, listPosts, getThread } from "./posts.js";
 import { linkCommit } from "./commits.js";
 import { getFeed, getBriefing, setChannelPriority, listChannelPriorities } from "./supervision.js";
+import { pushBundle, fetchBundle, listDagCommits, getLeaves, getChildren, diffCommits, promoteCommit, dagExists, getDagSummary } from "./gitdag.js";
 import type { ApiKey } from "./types.js";
 import { dashboardHtml } from "./dashboard.js";
+import fs from "fs";
+import path from "path";
+import os from "os";
 
 // Extend Hono context with auth info
 type Variables = {
   apiKey: ApiKey;
 };
 
-export function createApp(db: Database.Database): Hono<{ Variables: Variables }> {
+export function createApp(db: Database.Database, projectDir?: string): Hono<{ Variables: Variables }> {
   const app = new Hono<{ Variables: Variables }>();
+  const resolvedProjectDir = projectDir ?? process.cwd();
 
   // === Dashboard (no auth — local only) ===
 
@@ -280,6 +285,155 @@ export function createApp(db: Database.Database): Hono<{ Variables: Variables }>
     } catch (e: any) {
       return c.json({ error: e.message }, 404);
     }
+  });
+
+  // === Git DAG routes ===
+
+  // Push a bundle to the DAG
+  app.post("/api/git/push", async (c) => {
+    const apiKey = c.get("apiKey");
+    const agentHandle = apiKey.agent_handle;
+    if (!agentHandle && !isAdminKey(apiKey)) {
+      return c.json({ error: "Agent key or admin key required" }, 403);
+    }
+
+    // Accept multipart form data with bundle file + message
+    const formData = await c.req.formData();
+    const bundleFile = formData.get("bundle") as File | null;
+    const message = formData.get("message") as string | null;
+    const author = isAdminKey(apiKey)
+      ? (formData.get("author") as string | null) ?? "@admin"
+      : agentHandle!;
+
+    if (!bundleFile) {
+      return c.json({ error: "bundle file is required" }, 400);
+    }
+    if (!message) {
+      return c.json({ error: "message is required" }, 400);
+    }
+
+    // Write bundle to temp file
+    const tmpDir = os.tmpdir();
+    const tmpPath = path.join(tmpDir, `dag-bundle-${Date.now()}.bundle`);
+    try {
+      const arrayBuf = await bundleFile.arrayBuffer();
+      fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
+
+      const result = pushBundle(db, resolvedProjectDir, author, tmpPath, message);
+
+      // Auto-post to #work
+      try {
+        // Ensure #work channel exists
+        if (!getChannel(db, "#work")) {
+          createChannel(db, { name: "work", description: "Agent work updates" });
+        }
+        createPost(db, {
+          author,
+          channel: "#work",
+          content: `Pushed commit ${result.hash.slice(0, 8)}: ${message}`,
+          metadata: { dag_hash: result.hash, type: "dag_push" },
+        });
+      } catch {
+        // Auto-post is best-effort
+      }
+
+      return c.json(result, 201);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400);
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    }
+  });
+
+  // Fetch a bundle for a specific commit
+  app.get("/api/git/fetch/:hash", (c) => {
+    const hash = c.req.param("hash");
+    const tmpPath = path.join(os.tmpdir(), `dag-fetch-${Date.now()}.bundle`);
+    try {
+      fetchBundle(resolvedProjectDir, hash, tmpPath);
+      const data = fs.readFileSync(tmpPath);
+      c.header("Content-Type", "application/octet-stream");
+      c.header("Content-Disposition", `attachment; filename="${hash.slice(0, 8)}.bundle"`);
+      return c.body(data);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 404);
+    } finally {
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    }
+  });
+
+  // List DAG commits
+  app.get("/api/git/commits", (c) => {
+    const commits = listDagCommits(db, {
+      agentHandle: c.req.query("agent") || undefined,
+      since: c.req.query("since") || undefined,
+      limit: c.req.query("limit") ? parseInt(c.req.query("limit")!, 10) : 50,
+    });
+    return c.json(commits);
+  });
+
+  // Get leaves (active frontiers)
+  app.get("/api/git/leaves", (c) => {
+    const leaves = getLeaves(db, {
+      agentHandle: c.req.query("agent") || undefined,
+    });
+    return c.json(leaves);
+  });
+
+  // Get children of a commit
+  app.get("/api/git/commits/:hash/children", (c) => {
+    const children = getChildren(db, c.req.param("hash"));
+    return c.json(children);
+  });
+
+  // Diff two commits
+  app.get("/api/git/diff/:a/:b", (c) => {
+    try {
+      const diff = diffCommits(resolvedProjectDir, c.req.param("a"), c.req.param("b"));
+      return c.text(diff);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400);
+    }
+  });
+
+  // Promote a commit to main (admin only)
+  app.post("/api/git/promote", async (c) => {
+    if (!requireAdmin(c)) return c.body(null);
+    const body = await c.req.json();
+    if (!body.hash) {
+      return c.json({ error: "hash is required" }, 400);
+    }
+    try {
+      const result = promoteCommit(resolvedProjectDir, body.hash);
+
+      // Audit post
+      try {
+        if (!getChannel(db, "#work")) {
+          createChannel(db, { name: "work", description: "Agent work updates" });
+        }
+        createPost(db, {
+          author: "@admin",
+          channel: "#work",
+          content: `Promoted ${result.originalHash.slice(0, 8)} → main as ${result.newHash.slice(0, 8)}: ${result.message}`,
+          metadata: { type: "dag_promote", original_hash: result.originalHash, new_hash: result.newHash },
+        });
+      } catch {
+        // Audit post is best-effort
+      }
+
+      return c.json(result);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400);
+    }
+  });
+
+  // DAG summary for dashboard
+  app.get("/data/dag", (c) => {
+    if (!dagExists(resolvedProjectDir)) {
+      return c.json({ totalCommits: 0, leafCount: 0, agentActivity: [], recentLeaves: [] });
+    }
+    const summary = getDagSummary(db, c.req.query("since") || undefined);
+    return c.json(summary);
   });
 
   return app;

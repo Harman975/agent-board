@@ -14,11 +14,16 @@ import {
   renderChannelList,
   renderSpawnList,
   renderStatus,
+  renderDagLog,
+  renderDagTree,
+  renderDagSummary,
+  renderPromoteSummary,
   type SpawnInfo,
 } from "./render.js";
-import type { Agent, Post, RankedPost } from "./types.js";
+import type { Agent, DagCommit, Post, RankedPost } from "./types.js";
 import type { BriefingSummary } from "./supervision.js";
 import type { PostThread } from "./posts.js";
+import type { DagSummary, PromoteResult } from "./gitdag.js";
 
 // === .boardrc ===
 
@@ -100,7 +105,7 @@ program
   .command("init")
   .description("Initialize a new board: creates DB, @admin agent, admin key, .boardrc")
   .option("--port <port>", "Server port for .boardrc", "3141")
-  .action((opts: { port: string }) => {
+  .action(async (opts: { port: string }) => {
     if (dbExists()) {
       console.log("Board already initialized.");
       return;
@@ -125,12 +130,17 @@ program
 
     db.close();
 
+    // Initialize DAG bare repo
+    const { initDag } = await import("./gitdag.js");
+    initDag(process.cwd());
+
     // Write .boardrc
     writeBoardRC({ url: `http://localhost:${opts.port}`, key: rawKey });
 
     console.log("Board initialized.");
     console.log(`Admin key: ${rawKey}`);
     console.log("Saved to .boardrc — keep this file secure.");
+    console.log("DAG initialized at .dag/");
   });
 
 // --- board serve ---
@@ -781,6 +791,114 @@ program
     // Attach to the session
     const { spawnSync } = await import("child_process");
     spawnSync("tmux", ["attach-session", "-t", session], { stdio: "inherit" });
+  });
+
+// --- board tree ---
+program
+  .command("tree")
+  .description("Show the DAG commit tree")
+  .option("--agent <handle>", "Filter by agent")
+  .action(async (opts: { agent?: string }) => {
+    const rc = requireRC();
+    const [commitsRes, leavesRes] = await Promise.all([
+      api<DagCommit[]>(rc, "GET", `/api/git/commits?limit=200${opts.agent ? `&agent=${encodeURIComponent(opts.agent)}` : ""}`),
+      api<DagCommit[]>(rc, "GET", `/api/git/leaves${opts.agent ? `?agent=${encodeURIComponent(opts.agent)}` : ""}`),
+    ]);
+    if (!commitsRes.ok) {
+      console.error(`Error: ${(commitsRes.data as any).error}`);
+      process.exit(1);
+    }
+    const leafSet = new Set((leavesRes.ok ? leavesRes.data : []).map((l) => l.hash));
+    console.log(renderDagTree(commitsRes.data, leafSet));
+  });
+
+// --- board dag log ---
+const dag = program.command("dag").description("Git DAG operations");
+
+dag
+  .command("log")
+  .description("Show DAG commit log")
+  .option("--agent <handle>", "Filter by agent")
+  .option("--limit <n>", "Limit commits", "20")
+  .action(async (opts: { agent?: string; limit: string }) => {
+    const rc = requireRC();
+    const params = new URLSearchParams();
+    if (opts.agent) params.set("agent", opts.agent);
+    params.set("limit", opts.limit);
+    const res = await api<DagCommit[]>(rc, "GET", `/api/git/commits?${params.toString()}`);
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(renderDagLog(res.data));
+  });
+
+dag
+  .command("leaves")
+  .description("Show active exploration frontiers (leaf commits)")
+  .option("--agent <handle>", "Filter by agent")
+  .action(async (opts: { agent?: string }) => {
+    const rc = requireRC();
+    const qs = opts.agent ? `?agent=${encodeURIComponent(opts.agent)}` : "";
+    const res = await api<DagCommit[]>(rc, "GET", `/api/git/leaves${qs}`);
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    if (res.data.length === 0) {
+      console.log("  No leaves (DAG is empty).");
+    } else {
+      console.log(`${res.data.length} active frontier${res.data.length !== 1 ? "s" : ""}:\n`);
+      console.log(renderDagLog(res.data));
+    }
+  });
+
+dag
+  .command("diff <hash-a> <hash-b>")
+  .description("Diff two DAG commits")
+  .action(async (hashA: string, hashB: string) => {
+    const rc = requireRC();
+    const url = `${rc.url}/api/git/diff/${encodeURIComponent(hashA)}/${encodeURIComponent(hashB)}`;
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${rc.key}` },
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        console.error(`Error: ${(err as any).error}`);
+        process.exit(1);
+      }
+      console.log(await res.text());
+    } catch (err: any) {
+      console.error(`Cannot connect to server: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+dag
+  .command("promote <hash>")
+  .description("Promote a DAG commit to main (cherry-pick)")
+  .action(async (hash: string) => {
+    const rc = requireRC();
+    const res = await api<PromoteResult>(rc, "POST", "/api/git/promote", { hash });
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(renderPromoteSummary(res.data));
+  });
+
+dag
+  .command("summary")
+  .description("Show DAG summary")
+  .action(async () => {
+    const rc = requireRC();
+    const res = await api<DagSummary>(rc, "GET", "/data/dag");
+    if (!res.ok) {
+      console.error(`Error: ${(res.data as any).error}`);
+      process.exit(1);
+    }
+    console.log(renderDagSummary(res.data));
   });
 
 // If no subcommand given, launch interactive mode

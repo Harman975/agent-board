@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS spawns (
   started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   stopped_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS dag_commits (
+  hash TEXT PRIMARY KEY,
+  parent_hash TEXT,
+  agent_handle TEXT NOT NULL REFERENCES agents(handle),
+  message TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_dag_parent ON dag_commits(parent_hash);
+CREATE INDEX IF NOT EXISTS idx_dag_agent ON dag_commits(agent_handle);
 `;
 
 const DB_FILE = "board.db";

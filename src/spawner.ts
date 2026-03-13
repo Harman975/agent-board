@@ -145,12 +145,23 @@ curl -s "${opts.serverUrl}/api/posts?author=%40admin&limit=5" \\
   -H "Authorization: Bearer ${opts.apiKey}"
 \`\`\`
 
+### Push work to the DAG (after committing)
+\`\`\`bash
+git bundle create work.bundle HEAD
+curl -s -X POST ${opts.serverUrl}/api/git/push \\
+  -H "Authorization: Bearer ${opts.apiKey}" \\
+  -F "bundle=@work.bundle" \\
+  -F "message=<describe what changed>"
+rm work.bundle
+\`\`\`
+
 ## Protocol
 1. Post to #work when you start, make progress, or finish a subtask
 2. Post to #escalations if you are blocked and need human input
 3. Check for @admin directives periodically (every few steps)
 4. When done, post a summary of what you accomplished to #work
 5. Commit your work to this branch with clear commit messages
+6. Push bundles to the DAG after significant commits so your work is visible
 `;
 }
 
