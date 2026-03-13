@@ -36,9 +36,11 @@ export type Executor = (
 ) => ChildProcess;
 
 const defaultExecutor: Executor = (command, args, opts) => {
+  // Strip CLAUDECODE env var to allow nested Claude Code sessions
+  const { CLAUDECODE, ...parentEnv } = process.env;
   return nodeSpawn(command, args, {
     cwd: opts.cwd,
-    env: { ...process.env, ...opts.env },
+    env: { ...parentEnv, ...opts.env },
     stdio: opts.stdio,
     detached: opts.detached ?? true,
   });
