@@ -6,6 +6,7 @@ import { createPost } from "./posts.js";
 import { createChannel, getChannel } from "./channels.js";
 import { normalizeHandle, getAgent } from "./agents.js";
 import { generateKey, storeKey } from "./auth.js";
+import type { Identity } from "./types.js";
 
 // === Types ===
 
@@ -26,6 +27,7 @@ export interface SpawnOptions {
   serverUrl: string;
   projectDir: string;
   foreground?: boolean;
+  identity?: Identity;
 }
 
 // Executor interface for dependency injection (testability)
@@ -110,14 +112,19 @@ function generateAgentClaudeMd(opts: {
   mission: string;
   apiKey: string;
   serverUrl: string;
+  identityContent?: string;
 }): string {
+  const identitySection = opts.identityContent
+    ? `## Identity\n\n${opts.identityContent}\n\n`
+    : "";
+
   return `# DO NOT COMMIT — contains API key
 
 # AgentBoard Agent Instructions
 
 You are ${opts.handle}, an AI agent coordinated via AgentBoard.
 
-## Your Mission
+${identitySection}## Your Mission
 ${opts.mission}
 
 ## Board API
@@ -322,6 +329,7 @@ function _spawnProcess(
     mission: opts.mission,
     apiKey: opts.apiKey,
     serverUrl: opts.serverUrl,
+    identityContent: opts.identity?.content,
   });
   fs.writeFileSync(path.join(worktreePath, "CLAUDE.md"), claudeMd);
 
