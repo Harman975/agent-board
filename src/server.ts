@@ -8,6 +8,8 @@ import { createPost, getPost, listPosts, getThread } from "./posts.js";
 import { linkCommit } from "./commits.js";
 import { getFeed, getBriefing, setChannelPriority, listChannelPriorities } from "./supervision.js";
 import { pushBundle, fetchBundle, listDagCommits, getLeaves, getChildren, diffCommits, promoteCommit, dagExists, getDagSummary } from "./gitdag.js";
+import { createTeam, getTeam, listTeams, addTeamMember, removeTeamMember, updateTeamStatus } from "./teams.js";
+import { createRoute, listRoutes, updateRouteStatus } from "./routes.js";
 import type { ApiKey } from "./types.js";
 import { dashboardHtml } from "./dashboard.js";
 import fs from "fs";
@@ -423,6 +425,116 @@ export function createApp(db: Database.Database, projectDir?: string): Hono<{ Va
       }
 
       return c.json(result);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400);
+    }
+  });
+
+  // === Team routes (M2) ===
+
+  app.post("/api/teams", async (c) => {
+    if (!requireAdmin(c)) return c.body(null);
+    const body = await c.req.json();
+    if (!body.name || !body.mission || !body.manager) {
+      return c.json({ error: "name, mission, and manager are required" }, 400);
+    }
+    try {
+      const team = createTeam(db, {
+        name: body.name,
+        mission: body.mission,
+        manager: body.manager,
+      });
+      return c.json(team, 201);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 409);
+    }
+  });
+
+  app.get("/api/teams", (c) => {
+    const teams = listTeams(db);
+    return c.json(teams);
+  });
+
+  app.get("/api/teams/:name", (c) => {
+    const team = getTeam(db, c.req.param("name"));
+    if (!team) return c.json({ error: "Team not found" }, 404);
+    return c.json(team);
+  });
+
+  app.post("/api/teams/:name/members", async (c) => {
+    if (!requireAdmin(c)) return c.body(null);
+    const body = await c.req.json();
+    if (!body.agent_handle) {
+      return c.json({ error: "agent_handle is required" }, 400);
+    }
+    try {
+      const member = addTeamMember(db, c.req.param("name"), body.agent_handle);
+      return c.json(member, 201);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400);
+    }
+  });
+
+  app.delete("/api/teams/:name/members/:handle", (c) => {
+    if (!requireAdmin(c)) return c.body(null);
+    try {
+      removeTeamMember(db, c.req.param("name"), c.req.param("handle"));
+      return c.json({ ok: true });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 404);
+    }
+  });
+
+  app.patch("/api/teams/:name", async (c) => {
+    if (!requireAdmin(c)) return c.body(null);
+    const body = await c.req.json();
+    if (!body.status) {
+      return c.json({ error: "status is required" }, 400);
+    }
+    try {
+      const team = updateTeamStatus(db, c.req.param("name"), body.status);
+      if (!team) return c.json({ error: "Team not found" }, 404);
+      return c.json(team);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400);
+    }
+  });
+
+  // === Route routes (M2) ===
+
+  app.post("/api/routes", async (c) => {
+    const body = await c.req.json();
+    if (!body.team_name || !body.agent_handle || !body.name) {
+      return c.json({ error: "team_name, agent_handle, and name are required" }, 400);
+    }
+    try {
+      const route = createRoute(db, {
+        team_name: body.team_name,
+        agent_handle: body.agent_handle,
+        name: body.name,
+      });
+      return c.json(route, 201);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400);
+    }
+  });
+
+  app.get("/api/routes", (c) => {
+    const routes = listRoutes(db, {
+      team_name: c.req.query("team") || undefined,
+    });
+    return c.json(routes);
+  });
+
+  app.patch("/api/routes/:id", async (c) => {
+    const body = await c.req.json();
+    if (!body.status) {
+      return c.json({ error: "status is required" }, 400);
+    }
+    try {
+      const route = updateRouteStatus(db, c.req.param("id"), body.status);
+      if (!route) return c.json({ error: "Route not found" }, 404);
+      return c.json(route);
     } catch (e: any) {
       return c.json({ error: e.message }, 400);
     }
