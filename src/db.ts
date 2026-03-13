@@ -8,6 +8,7 @@ const FOUNDATION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
   handle TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'solo' CHECK(role IN ('manager', 'worker', 'solo')),
   mission TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'idle', 'blocked', 'stopped')),
   metadata TEXT DEFAULT '{}',
@@ -84,6 +85,36 @@ CREATE TABLE IF NOT EXISTS dag_commits (
 );
 CREATE INDEX IF NOT EXISTS idx_dag_parent ON dag_commits(parent_hash);
 CREATE INDEX IF NOT EXISTS idx_dag_agent ON dag_commits(agent_handle);
+
+CREATE TABLE IF NOT EXISTS teams (
+  name TEXT PRIMARY KEY,
+  mission TEXT NOT NULL,
+  manager TEXT NOT NULL REFERENCES agents(handle),
+  status TEXT NOT NULL DEFAULT 'exploring'
+    CHECK(status IN ('exploring', 'building', 'blocked', 'done')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+  team_name TEXT NOT NULL REFERENCES teams(name),
+  agent_handle TEXT NOT NULL REFERENCES agents(handle),
+  PRIMARY KEY (team_name, agent_handle)
+);
+
+CREATE TABLE IF NOT EXISTS routes (
+  id TEXT PRIMARY KEY,
+  team_name TEXT NOT NULL REFERENCES teams(name),
+  agent_handle TEXT NOT NULL REFERENCES agents(handle),
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'exploring'
+    CHECK(status IN ('exploring', 'chosen', 'abandoned')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_teams_manager ON teams(manager);
+CREATE INDEX IF NOT EXISTS idx_team_members_agent ON team_members(agent_handle);
+CREATE INDEX IF NOT EXISTS idx_routes_team ON routes(team_name);
+CREATE INDEX IF NOT EXISTS idx_routes_agent ON routes(agent_handle);
 `;
 
 const DB_FILE = "board.db";

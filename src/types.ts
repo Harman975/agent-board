@@ -2,9 +2,12 @@
 
 export type AgentStatus = "active" | "idle" | "blocked" | "stopped";
 
+export type AgentRole = "manager" | "worker" | "solo";
+
 export interface Agent {
   handle: string;
   name: string;
+  role: AgentRole;
   mission: string;
   status: AgentStatus;
   metadata: Record<string, unknown>;
@@ -58,6 +61,7 @@ export interface Cursor {
 export interface AgentRow {
   handle: string;
   name: string;
+  role: string;
   mission: string;
   status: string;
   metadata: string;
@@ -84,6 +88,33 @@ export interface CommitRow {
 // Post with priority attached (for feed queries)
 export interface RankedPost extends Post {
   priority: number;
+}
+
+// === M2 Org Structure types ===
+
+export type TeamStatus = "exploring" | "building" | "blocked" | "done";
+export type RouteStatus = "exploring" | "chosen" | "abandoned";
+
+export interface Team {
+  name: string;
+  mission: string;
+  manager: string;
+  status: TeamStatus;
+  created_at: string;
+}
+
+export interface TeamMember {
+  team_name: string;
+  agent_handle: string;
+}
+
+export interface Route {
+  id: string;
+  team_name: string;
+  agent_handle: string;
+  name: string;
+  status: RouteStatus;
+  created_at: string;
 }
 
 // === DAG types ===

@@ -96,6 +96,7 @@ export function createApp(db: Database.Database, projectDir?: string): Hono<{ Va
       const agent = createAgent(db, {
         handle: body.handle,
         name: body.name ?? body.handle.replace(/^@/, ""),
+        role: body.role,
         mission: body.mission,
         metadata: body.metadata,
       });

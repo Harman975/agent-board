@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { Agent, AgentRow, AgentStatus } from "./types.js";
+import type { Agent, AgentRole, AgentRow, AgentStatus } from "./types.js";
 
 function safeJsonParse(json: string, fallback: Record<string, unknown> = {}): Record<string, unknown> {
   try {
@@ -12,6 +12,7 @@ function safeJsonParse(json: string, fallback: Record<string, unknown> = {}): Re
 function rowToAgent(row: AgentRow): Agent {
   return {
     ...row,
+    role: (row.role ?? "solo") as AgentRole,
     status: row.status as AgentStatus,
     metadata: safeJsonParse(row.metadata),
   };
@@ -41,6 +42,7 @@ export function createAgent(
   opts: {
     handle: string;
     name: string;
+    role?: AgentRole;
     mission: string;
     metadata?: Record<string, unknown>;
   }
@@ -54,9 +56,9 @@ export function createAgent(
   }
 
   db.prepare(`
-    INSERT INTO agents (handle, name, mission, metadata)
-    VALUES (?, ?, ?, ?)
-  `).run(handle, opts.name, opts.mission, JSON.stringify(opts.metadata ?? {}));
+    INSERT INTO agents (handle, name, role, mission, metadata)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(handle, opts.name, opts.role ?? "solo", opts.mission, JSON.stringify(opts.metadata ?? {}));
 
   return getAgent(db, handle)!;
 }
@@ -87,7 +89,7 @@ export function listAgents(
 export function updateAgent(
   db: Database.Database,
   handle: string,
-  updates: Partial<Pick<Agent, "name" | "mission" | "status" | "metadata">>
+  updates: Partial<Pick<Agent, "name" | "role" | "mission" | "status" | "metadata">>
 ): Agent | null {
   handle = normalizeHandle(handle);
 
@@ -97,6 +99,10 @@ export function updateAgent(
   if (updates.name !== undefined) {
     fields.push("name = ?");
     params.push(updates.name);
+  }
+  if (updates.role !== undefined) {
+    fields.push("role = ?");
+    params.push(updates.role);
   }
   if (updates.mission !== undefined) {
     fields.push("mission = ?");

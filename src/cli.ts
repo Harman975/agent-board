@@ -186,11 +186,13 @@ agent
   .description("Create a new agent")
   .requiredOption("--mission <mission>", "Agent mission")
   .option("--name <name>", "Agent display name")
-  .action(async (handle: string, opts: { mission: string; name?: string }) => {
+  .option("--role <role>", "Agent role (manager, worker, solo)", "solo")
+  .action(async (handle: string, opts: { mission: string; name?: string; role?: string }) => {
     const rc = requireRC();
     const res = await api<Agent & { api_key: string }>(rc, "POST", "/api/agents", {
       handle,
       name: opts.name,
+      role: opts.role,
       mission: opts.mission,
     });
     if (!res.ok) {
