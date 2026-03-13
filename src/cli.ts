@@ -25,10 +25,11 @@ import {
   renderOrg,
   type SpawnInfo,
 } from "./render.js";
-import type { Agent, DagCommit, Post, RankedPost, Team, TeamMember, Route } from "./types.js";
+import type { Agent, DagCommit, Post, RankedPost, Team, TeamMember, Route, SprintValidation, SprintBranch } from "./types.js";
 import type { BriefingSummary } from "./supervision.js";
 import type { PostThread } from "./posts.js";
 import type { DagSummary, PromoteResult } from "./gitdag.js";
+import { execSync, spawn as nodeSpawn } from "child_process";
 
 // === .boardrc ===
 
@@ -140,12 +141,29 @@ program
     initDag(process.cwd());
 
     // Write .boardrc
-    writeBoardRC({ url: `http://localhost:${opts.port}`, key: rawKey });
+    const serverUrl = `http://localhost:${opts.port}`;
+    writeBoardRC({ url: serverUrl, key: rawKey });
+
+    // Auto-start the server in the background
+    const serverChild = nodeSpawn(process.argv[0], [process.argv[1], "serve", "--port", opts.port], {
+      cwd: process.cwd(),
+      env: { ...process.env },
+      stdio: "ignore",
+      detached: true,
+    });
+    serverChild.unref();
 
     console.log("Board initialized.");
     console.log(`Admin key: ${rawKey}`);
     console.log("Saved to .boardrc — keep this file secure.");
     console.log("DAG initialized at .dag/");
+    console.log(`\nServer started in background (PID ${serverChild.pid}) on ${serverUrl}`);
+    console.log("\nNext steps:");
+    console.log("  board status          — check system overview");
+    console.log("  board agent create    — create an agent");
+    console.log("  board spawn <handle>  — spawn an agent subprocess");
+    console.log("  board feed            — view the activity feed");
+    console.log("  board watch           — live-updating feed");
   });
 
 // --- board serve ---
@@ -495,7 +513,8 @@ program
   .requiredOption("--mission <mission>", "Agent mission / task description")
   .option("--name <name>", "Agent display name")
   .option("--foreground", "Run in foreground (inherits terminal I/O)")
-  .action(async (handle: string, opts: { mission: string; name?: string; foreground?: boolean }) => {
+  .option("--identity <name>", "Identity name (from identities/ folder) to pass to spawner")
+  .action(async (handle: string, opts: { mission: string; name?: string; foreground?: boolean; identity?: string }) => {
     const rc = requireRC();
 
     // Create agent via API
@@ -513,10 +532,24 @@ program
     const { getDb } = await import("./db.js");
     const db = getDb();
 
+    // If identity specified, read identity file and prepend to mission
+    let mission = opts.mission;
+    if (opts.identity) {
+      const identityPath = path.join(process.cwd(), "identities", `${opts.identity}.md`);
+      if (!fs.existsSync(identityPath)) {
+        console.error(`Identity not found: ${opts.identity}`);
+        console.error(`Available identities: board identity list`);
+        db.close();
+        process.exit(1);
+      }
+      const identityContent = fs.readFileSync(identityPath, "utf-8");
+      mission = `[Identity: ${opts.identity}]\n${identityContent}\n\n${opts.mission}`;
+    }
+
     try {
       const result = spawnAgent(db, {
         handle: res.data.handle,
-        mission: opts.mission,
+        mission,
         apiKey: res.data.api_key,
         serverUrl: rc.url,
         projectDir: process.cwd(),
@@ -1064,6 +1097,240 @@ program
       teamsRes.ok ? teamsRes.data : [],
       routesRes.ok ? routesRes.data : [],
     ));
+  });
+
+// --- board diff ---
+program
+  .command("diff <handle>")
+  .description("Show git diff for an agent's branch vs main")
+  .option("--stat", "Show summary only (--stat)")
+  .action(async (handle: string, opts: { stat?: boolean }) => {
+    const { getSpawn } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+    const h = handle.startsWith("@") ? handle : `@${handle}`;
+
+    const spawn = getSpawn(db, h);
+    db.close();
+
+    if (!spawn) {
+      console.error(`No spawn record for ${h}`);
+      process.exit(1);
+    }
+    if (!spawn.branch) {
+      console.error(`No branch recorded for ${h}`);
+      process.exit(1);
+    }
+
+    try {
+      const args = opts.stat ? `--stat` : "";
+      const output = execSync(`git diff main..${spawn.branch} ${args}`, {
+        cwd: process.cwd(),
+        encoding: "utf-8",
+        stdio: "pipe",
+      });
+      console.log(output || "(no changes)");
+    } catch (err: any) {
+      console.error(`Error running git diff: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+// --- board log ---
+program
+  .command("log <handle>")
+  .description("Tail an agent's log file")
+  .option("--follow", "Follow the log (tail -f)")
+  .action(async (handle: string, opts: { follow?: boolean }) => {
+    const { getSpawn } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+    const h = handle.startsWith("@") ? handle : `@${handle}`;
+
+    const spawn = getSpawn(db, h);
+    db.close();
+
+    if (!spawn) {
+      console.error(`No spawn record for ${h}`);
+      process.exit(1);
+    }
+    if (!spawn.log_path || !fs.existsSync(spawn.log_path)) {
+      console.error(`Log file not found: ${spawn.log_path}`);
+      process.exit(1);
+    }
+
+    if (opts.follow) {
+      const tail = nodeSpawn("tail", ["-f", spawn.log_path], { stdio: "inherit" });
+      tail.on("exit", (code) => process.exit(code ?? 0));
+    } else {
+      const output = execSync(`tail ${spawn.log_path}`, { encoding: "utf-8" });
+      console.log(output);
+    }
+  });
+
+// --- board validate-sprint ---
+program
+  .command("validate-sprint")
+  .description("Validate sprint: check agents stopped, run tests, detect conflicts")
+  .action(async () => {
+    const { listSpawns, isProcessAlive } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+
+    const spawns = listSpawns(db);
+    db.close();
+
+    // 1. Check all spawned agents are stopped
+    const allStopped = spawns.every((s) => s.stopped_at !== null || !isProcessAlive(s.pid));
+    if (!allStopped) {
+      const running = spawns.filter((s) => !s.stopped_at && isProcessAlive(s.pid));
+      console.log(`⚠ Running agents: ${running.map((s) => s.agent_handle).join(", ")}`);
+    } else {
+      console.log("All agents stopped.");
+    }
+
+    // 2. Run npm test
+    let testsPass = false;
+    console.log("\nRunning tests...");
+    try {
+      execSync("npm test", { cwd: process.cwd(), stdio: "inherit" });
+      testsPass = true;
+      console.log("Tests passed.");
+    } catch {
+      console.log("Tests failed.");
+    }
+
+    // 3. Show git diff --stat for each agent branch and collect file changes
+    const branches: SprintBranch[] = [];
+    const filesByBranch = new Map<string, Set<string>>();
+
+    for (const s of spawns) {
+      if (!s.branch) continue;
+      try {
+        const stat = execSync(`git diff --stat main..${s.branch}`, {
+          cwd: process.cwd(),
+          encoding: "utf-8",
+          stdio: "pipe",
+        });
+        console.log(`\n--- ${s.agent_handle} (${s.branch}) ---`);
+        console.log(stat || "(no changes)");
+
+        // Parse numstat for structured data
+        const numstat = execSync(`git diff --numstat main..${s.branch}`, {
+          cwd: process.cwd(),
+          encoding: "utf-8",
+          stdio: "pipe",
+        }).trim();
+
+        let filesChanged = 0;
+        let additions = 0;
+        let deletions = 0;
+        const files = new Set<string>();
+
+        if (numstat) {
+          for (const line of numstat.split("\n")) {
+            const parts = line.split("\t");
+            if (parts.length >= 3) {
+              additions += parseInt(parts[0], 10) || 0;
+              deletions += parseInt(parts[1], 10) || 0;
+              files.add(parts[2]);
+              filesChanged++;
+            }
+          }
+        }
+
+        filesByBranch.set(s.agent_handle, files);
+        branches.push({
+          agent_handle: s.agent_handle,
+          branch: s.branch,
+          filesChanged,
+          additions,
+          deletions,
+        });
+      } catch {
+        console.log(`\n--- ${s.agent_handle} (${s.branch}) --- (branch not found)`);
+      }
+    }
+
+    // 4. Detect file conflicts (files changed by multiple branches)
+    const fileCounts = new Map<string, string[]>();
+    for (const [handle, files] of filesByBranch) {
+      for (const file of files) {
+        if (!fileCounts.has(file)) fileCounts.set(file, []);
+        fileCounts.get(file)!.push(handle);
+      }
+    }
+    const conflicts: string[] = [];
+    for (const [file, agents] of fileCounts) {
+      if (agents.length > 1) {
+        conflicts.push(`${file} (${agents.join(", ")})`);
+      }
+    }
+
+    if (conflicts.length > 0) {
+      console.log("\nConflicts detected:");
+      for (const c of conflicts) {
+        console.log(`  - ${c}`);
+      }
+    } else {
+      console.log("\nNo file conflicts detected.");
+    }
+
+    // 5. Suggest merge order: fewest files first (less likely to conflict)
+    const suggestedOrder = [...branches]
+      .sort((a, b) => a.filesChanged - b.filesChanged)
+      .map((b) => b.agent_handle);
+
+    if (suggestedOrder.length > 0) {
+      console.log("\nSuggested merge order:");
+      suggestedOrder.forEach((h, i) => console.log(`  ${i + 1}. ${h}`));
+    }
+
+    const validation: SprintValidation = {
+      allStopped,
+      testsPass,
+      branches,
+      conflicts: conflicts.map((c) => c.split(" (")[0]), // just file names
+      suggestedOrder,
+    };
+
+    // Output JSON for programmatic use
+    console.log("\n" + JSON.stringify(validation, null, 2));
+  });
+
+// --- board identity ---
+const identity = program.command("identity").description("Manage agent identities");
+
+identity
+  .command("list")
+  .description("List available identities")
+  .action(async () => {
+    const identitiesDir = path.join(process.cwd(), "identities");
+    if (!fs.existsSync(identitiesDir)) {
+      console.log("No identities/ folder found.");
+      return;
+    }
+    const files = fs.readdirSync(identitiesDir).filter((f) => f.endsWith(".md"));
+    if (files.length === 0) {
+      console.log("No identity files found in identities/");
+      return;
+    }
+    console.log("Available identities:");
+    for (const file of files) {
+      console.log(`  ${file.replace(/\.md$/, "")}`);
+    }
+  });
+
+identity
+  .command("show <name>")
+  .description("Show an identity file")
+  .action(async (name: string) => {
+    const identityPath = path.join(process.cwd(), "identities", `${name}.md`);
+    if (!fs.existsSync(identityPath)) {
+      console.error(`Identity not found: ${name}`);
+      process.exit(1);
+    }
+    console.log(fs.readFileSync(identityPath, "utf-8"));
   });
 
 // If no subcommand given, launch interactive mode
