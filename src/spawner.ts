@@ -28,6 +28,7 @@ export interface SpawnOptions {
   projectDir: string;
   foreground?: boolean;
   identity?: Identity;
+  scope?: string[];
 }
 
 // Executor interface for dependency injection (testability)
@@ -113,9 +114,14 @@ function generateAgentClaudeMd(opts: {
   apiKey: string;
   serverUrl: string;
   identityContent?: string;
+  scope?: string[];
 }): string {
   const identitySection = opts.identityContent
     ? `## Identity\n\n${opts.identityContent}\n\n`
+    : "";
+
+  const scopeSection = opts.scope && opts.scope.length > 0
+    ? `\n## File Scope\n\nYou are only allowed to modify the following files:\n${opts.scope.map(f => `- ${f}`).join("\n")}\n\nIf you need changes outside this scope, post to #escalations and wait for approval.\n`
     : "";
 
   return `# DO NOT COMMIT — contains API key
@@ -126,6 +132,10 @@ You are ${opts.handle}, an AI agent coordinated via AgentBoard.
 
 ${identitySection}## Your Mission
 ${opts.mission}
+${scopeSection}
+## Active Directives
+
+No active directives.
 
 ## Board API
 
@@ -330,6 +340,7 @@ function _spawnProcess(
     apiKey: opts.apiKey,
     serverUrl: opts.serverUrl,
     identityContent: opts.identity?.content,
+    scope: opts.scope,
   });
   fs.writeFileSync(path.join(worktreePath, "CLAUDE.md"), claudeMd);
 
@@ -399,6 +410,74 @@ function _spawnProcess(
 
   return { pid, worktreePath, branch, child: foreground ? child : undefined };
 }
+
+// === Directive management ===
+
+const DIRECTIVES_HEADER = "## Active Directives";
+const DIRECTIVES_EMPTY = "No active directives.";
+
+function getWorktreeClaudeMdPath(projectDir: string, handle: string): string {
+  handle = normalizeHandle(handle);
+  const worktreePath = path.join(projectDir, ".worktrees", handle);
+  return path.join(worktreePath, "CLAUDE.md");
+}
+
+export function writeDirective(projectDir: string, handle: string, directive: string): void {
+  const claudeMdPath = getWorktreeClaudeMdPath(projectDir, handle);
+  if (!fs.existsSync(claudeMdPath)) {
+    throw new Error(`CLAUDE.md not found for ${handle} at ${claudeMdPath}`);
+  }
+
+  let content = fs.readFileSync(claudeMdPath, "utf-8");
+  const headerIdx = content.indexOf(DIRECTIVES_HEADER);
+  if (headerIdx === -1) {
+    throw new Error(`Active Directives section not found in CLAUDE.md for ${handle}`);
+  }
+
+  const timestamp = new Date().toISOString();
+  const entry = `- [${timestamp}] ${directive}`;
+
+  // Find the section content between header and next ## section
+  const afterHeader = headerIdx + DIRECTIVES_HEADER.length;
+  const nextSection = content.indexOf("\n## ", afterHeader);
+  const sectionEnd = nextSection === -1 ? content.length : nextSection;
+  const sectionContent = content.slice(afterHeader, sectionEnd);
+
+  // Build new section content: remove "No active directives." if present, append new directive
+  const existingDirectives = sectionContent
+    .split("\n")
+    .filter(line => line.startsWith("- ["))
+    .join("\n");
+
+  const newSectionContent = existingDirectives
+    ? `\n\n${existingDirectives}\n${entry}\n`
+    : `\n\n${entry}\n`;
+
+  content = content.slice(0, afterHeader) + newSectionContent + content.slice(sectionEnd);
+  fs.writeFileSync(claudeMdPath, content);
+}
+
+export function clearDirectives(projectDir: string, handle: string): void {
+  const claudeMdPath = getWorktreeClaudeMdPath(projectDir, handle);
+  if (!fs.existsSync(claudeMdPath)) {
+    throw new Error(`CLAUDE.md not found for ${handle} at ${claudeMdPath}`);
+  }
+
+  let content = fs.readFileSync(claudeMdPath, "utf-8");
+  const headerIdx = content.indexOf(DIRECTIVES_HEADER);
+  if (headerIdx === -1) {
+    throw new Error(`Active Directives section not found in CLAUDE.md for ${handle}`);
+  }
+
+  const afterHeader = headerIdx + DIRECTIVES_HEADER.length;
+  const nextSection = content.indexOf("\n## ", afterHeader);
+  const sectionEnd = nextSection === -1 ? content.length : nextSection;
+
+  content = content.slice(0, afterHeader) + `\n\n${DIRECTIVES_EMPTY}\n` + content.slice(sectionEnd);
+  fs.writeFileSync(claudeMdPath, content);
+}
+
+// === Merge ===
 
 export interface MergeResult {
   branch: string;
