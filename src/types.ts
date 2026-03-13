@@ -117,6 +117,43 @@ export interface Route {
   created_at: string;
 }
 
+// === Identity types ===
+
+export interface Identity {
+  name: string;
+  description: string;
+  expertise: string[];
+  vibe: string;
+  content: string; // full markdown body
+}
+
+export interface IdentityFrontmatter {
+  name: string;
+  description: string;
+  expertise?: string[];
+  vibe?: string;
+  emoji?: string;
+  color?: string;
+}
+
+// === Sprint types ===
+
+export interface SprintValidation {
+  allStopped: boolean;
+  testsPass: boolean;
+  branches: SprintBranch[];
+  conflicts: string[]; // files changed by multiple branches
+  suggestedOrder: string[]; // agent handles in merge order
+}
+
+export interface SprintBranch {
+  agent_handle: string;
+  branch: string;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+}
+
 // === DAG types ===
 
 export interface DagCommit {

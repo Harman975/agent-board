@@ -35,7 +35,7 @@ export function getRoute(db: Database.Database, id: string): Route | null {
 
 export function listRoutes(
   db: Database.Database,
-  opts?: { status?: RouteStatus; agent_handle?: string }
+  opts?: { status?: RouteStatus; agent_handle?: string; team_name?: string }
 ): Route[] {
   let sql = "SELECT * FROM routes WHERE 1=1";
   const params: unknown[] = [];
@@ -47,6 +47,10 @@ export function listRoutes(
   if (opts?.agent_handle) {
     sql += " AND agent_handle = ?";
     params.push(normalizeHandle(opts.agent_handle));
+  }
+  if (opts?.team_name) {
+    sql += " AND team_name = ?";
+    params.push(opts.team_name);
   }
 
   sql += " ORDER BY created_at ASC";

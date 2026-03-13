@@ -951,7 +951,7 @@ describe("M2 API: route endpoints", () => {
     assert.equal(data.length, 1);
   });
 
-  it("GET /api/routes?team=t1 returns all routes (team filter not implemented in listRoutes)", async () => {
+  it("GET /api/routes?team=t1 filters routes by team", async () => {
     db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run("t2", "m2", "@mgr");
     db.prepare("INSERT INTO routes (id, team_name, agent_handle, name) VALUES (?, ?, ?, ?)").run("r1", "t1", "@worker-a", "r1");
     db.prepare("INSERT INTO routes (id, team_name, agent_handle, name) VALUES (?, ?, ?, ?)").run("r2", "t2", "@worker-b", "r2");
@@ -961,7 +961,8 @@ describe("M2 API: route endpoints", () => {
     });
     assert.equal(res.status, 200);
     const data = await res.json();
-    assert.equal(data.length, 2);
+    assert.equal(data.length, 1);
+    assert.equal(data[0].team_name, "t1");
   });
 
   it("GET /api/routes/:id is not a registered route (no GET by id)", async () => {
