@@ -64,6 +64,24 @@ function requireRC(): BoardRC {
   return rc;
 }
 
+// === File tree helper ===
+
+function walkDir(dir: string, base: string): string[] {
+  const results: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    const rel = path.relative(base, full);
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules" || entry.name === ".git") continue;
+      results.push(rel + "/");
+      results.push(...walkDir(full, base));
+    } else {
+      results.push(rel);
+    }
+  }
+  return results;
+}
+
 // === HTTP client ===
 
 async function api<T>(
@@ -1296,6 +1314,245 @@ program
 
     // Output JSON for programmatic use
     console.log("\n" + JSON.stringify(validation, null, 2));
+  });
+
+// --- board sprint ---
+const sprint = program.command("sprint").description("Sprint planning and execution");
+
+sprint
+  .command("suggest <goal>")
+  .description("Generate an LLM prompt for sprint planning based on src/ tree and available identities")
+  .action(async (goal: string) => {
+    // 1. Read file tree of src/
+    const srcDir = path.join(process.cwd(), "src");
+    let fileTree: string[] = [];
+    if (fs.existsSync(srcDir)) {
+      fileTree = walkDir(srcDir, process.cwd());
+    }
+
+    // 2. Read identities from identities/ folder
+    const identitiesDir = path.join(process.cwd(), "identities");
+    const agents: { name: string; description: string }[] = [];
+    if (fs.existsSync(identitiesDir)) {
+      const files = fs.readdirSync(identitiesDir).filter((f) => f.endsWith(".md"));
+      for (const file of files) {
+        const content = fs.readFileSync(path.join(identitiesDir, file), "utf-8");
+        const match = content.match(/^---\n([\s\S]*?)\n---/);
+        if (match) {
+          const frontmatter = match[1];
+          const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
+          const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
+          if (nameMatch && descMatch) {
+            agents.push({ name: nameMatch[1].trim(), description: descMatch[1].trim() });
+          }
+        }
+      }
+    }
+
+    // 3. Output formatted prompt
+    const prompt = `You are a sprint planner for a software project.
+
+## Goal
+${goal}
+
+## Source Tree
+\`\`\`
+${fileTree.join("\n")}
+\`\`\`
+
+## Available Agents
+${agents.map((a) => `- **${a.name}**: ${a.description}`).join("\n")}
+
+## Instructions
+Break the goal into parallel tasks. Assign each task to an agent whose expertise matches.
+Ensure scopes are disjoint — no file should appear in two agents' scopes.
+
+Respond with the following JSON schema:
+
+\`\`\`json
+{
+  "goal": "string — the sprint goal",
+  "tasks": [
+    {
+      "agent": "string — agent identity name",
+      "handle": "string — @handle for the agent",
+      "mission": "string — detailed task description",
+      "scope": ["string — file paths this agent owns"]
+    }
+  ]
+}
+\`\`\`
+`;
+    console.log(prompt);
+  });
+
+sprint
+  .command("start")
+  .description("Start a sprint from a plan file, spawning agents with disjoint scopes")
+  .requiredOption("--plan <path>", "Path to JSON sprint plan file")
+  .action(async (opts: { plan: string }) => {
+    const rc = requireRC();
+    const planPath = path.resolve(opts.plan);
+
+    if (!fs.existsSync(planPath)) {
+      console.error(`Plan file not found: ${planPath}`);
+      process.exit(1);
+    }
+
+    let plan: { goal: string; tasks: { agent: string; handle: string; mission: string; scope: string[] }[] };
+    try {
+      plan = JSON.parse(fs.readFileSync(planPath, "utf-8"));
+    } catch (err: any) {
+      console.error(`Invalid JSON in plan file: ${err.message}`);
+      process.exit(1);
+    }
+
+    if (!plan.tasks || !Array.isArray(plan.tasks)) {
+      console.error("Plan must contain a 'tasks' array.");
+      process.exit(1);
+    }
+
+    // Validate scopes are disjoint
+    const fileOwners = new Map<string, string>();
+    const overlaps: string[] = [];
+    for (const task of plan.tasks) {
+      for (const file of task.scope ?? []) {
+        const existing = fileOwners.get(file);
+        if (existing) {
+          overlaps.push(`${file} claimed by both ${existing} and ${task.handle}`);
+        } else {
+          fileOwners.set(file, task.handle);
+        }
+      }
+    }
+
+    if (overlaps.length > 0) {
+      console.error("Scope overlap detected — aborting:");
+      for (const o of overlaps) {
+        console.error(`  - ${o}`);
+      }
+      process.exit(1);
+    }
+
+    console.log(`Starting sprint: ${plan.goal}`);
+    console.log(`Tasks: ${plan.tasks.length}, scopes disjoint ✓\n`);
+
+    const { spawnAgent } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+
+    for (const task of plan.tasks) {
+      const handle = task.handle.startsWith("@") ? task.handle.slice(1) : task.handle;
+
+      // Create agent via API
+      const res = await api<any>(rc, "POST", "/api/agents", {
+        handle,
+        name: task.agent,
+        mission: task.mission,
+      });
+      if (!res.ok) {
+        console.error(`Error creating ${handle}: ${(res.data as any).error}`);
+        continue;
+      }
+
+      // Read identity if available
+      let mission = task.mission;
+      if (task.scope && task.scope.length > 0) {
+        mission += `\n\nYour scope (files you own):\n${task.scope.map((f) => `- ${f}`).join("\n")}`;
+      }
+
+      const identityPath = path.join(process.cwd(), "identities", `${task.agent}.md`);
+      if (fs.existsSync(identityPath)) {
+        const identityContent = fs.readFileSync(identityPath, "utf-8");
+        mission = `[Identity: ${task.agent}]\n${identityContent}\n\n${mission}`;
+      }
+
+      try {
+        const result = spawnAgent(db, {
+          handle: res.data.handle,
+          mission,
+          apiKey: res.data.api_key,
+          serverUrl: rc.url,
+          projectDir: process.cwd(),
+        });
+        console.log(`Spawned ${res.data.handle} (PID ${result.pid}) → ${result.branch}`);
+      } catch (err: any) {
+        console.error(`Spawn failed for ${handle}: ${err.message}`);
+      }
+    }
+
+    db.close();
+  });
+
+// --- board steer ---
+program
+  .command("steer <handle> [message]")
+  .description("Send a directive to a running agent, or clear directives with --clear")
+  .option("--clear", "Clear all directives for this agent")
+  .action(async (handle: string, message: string | undefined, opts: { clear?: boolean }) => {
+    const h = handle.startsWith("@") ? handle : `@${handle}`;
+
+    const { getSpawn } = await import("./spawner.js");
+    const { getDb } = await import("./db.js");
+    const db = getDb();
+
+    const spawn = getSpawn(db, h);
+    if (!spawn) {
+      console.error(`No spawn record for ${h}`);
+      db.close();
+      process.exit(1);
+    }
+
+    if (!spawn.worktree_path) {
+      console.error(`No worktree path for ${h}`);
+      db.close();
+      process.exit(1);
+    }
+
+    const directivePath = path.join(spawn.worktree_path, "DIRECTIVE.md");
+
+    if (opts.clear) {
+      // Clear directives
+      if (fs.existsSync(directivePath)) {
+        fs.unlinkSync(directivePath);
+        console.log(`Cleared directives for ${h}`);
+      } else {
+        console.log(`No directives to clear for ${h}`);
+      }
+      db.close();
+      return;
+    }
+
+    if (!message) {
+      console.error("Message is required (or use --clear)");
+      db.close();
+      process.exit(1);
+    }
+
+    // Write directive to agent's worktree
+    const timestamp = new Date().toISOString();
+    const directiveContent = fs.existsSync(directivePath)
+      ? fs.readFileSync(directivePath, "utf-8") + `\n---\n[${timestamp}] ${message}\n`
+      : `# Directives from @admin\n\n[${timestamp}] ${message}\n`;
+    fs.writeFileSync(directivePath, directiveContent);
+    console.log(`Wrote directive to ${h}`);
+
+    // Post directive to #work as @admin
+    const rc = readBoardRC();
+    if (rc) {
+      try {
+        await api(rc, "POST", "/api/posts", {
+          content: `@${h.replace("@", "")} DIRECTIVE: ${message}`,
+          channel: "#work",
+          author: "@admin",
+        });
+        console.log(`Posted directive to #work`);
+      } catch {
+        // Best effort — agent may still read DIRECTIVE.md
+      }
+    }
+
+    db.close();
   });
 
 // --- board identity ---
