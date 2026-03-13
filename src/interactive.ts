@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { spawn as nodeSpawn } from "child_process";
 import { initDb, dbExists, getDb } from "./db.js";
+import { normalizeHandle } from "./agents.js";
 import { generateKey, hashKey } from "./auth.js";
 import {
   renderFeed,
@@ -197,7 +198,7 @@ async function actionSpawn(rc: BoardRC, rl: readline.Interface, db: Database.Dat
   const mission = await ask(rl, `  ${c.green}Mission:${c.reset} `);
   if (!mission) return;
 
-  const h = handle.startsWith("@") ? handle : `@${handle}`;
+  const h = normalizeHandle(handle);
 
   // Create agent via API
   const res = await api<any>(rc, "POST", "/api/agents", {
@@ -299,7 +300,7 @@ async function actionKill(rl: readline.Interface, db: Database.Database) {
   const handle = await ask(rl, `  ${c.green}Handle to kill:${c.reset} @`);
   if (!handle) return;
 
-  const h = handle.startsWith("@") ? handle : `@${handle}`;
+  const h = normalizeHandle(handle);
   const { killAgent } = await import("./spawner.js");
 
   try {
@@ -314,7 +315,7 @@ async function actionMerge(rl: readline.Interface, db: Database.Database) {
   const handle = await ask(rl, `  ${c.green}Handle to merge:${c.reset} @`);
   if (!handle) return;
 
-  const h = handle.startsWith("@") ? handle : `@${handle}`;
+  const h = normalizeHandle(handle);
   const cleanup = await ask(rl, `  ${c.dim}Clean up worktree after merge? (y/n):${c.reset} `);
 
   const { mergeAgent } = await import("./spawner.js");
@@ -344,7 +345,7 @@ async function actionLogs(rl: readline.Interface, db: Database.Database) {
   const handle = await ask(rl, `  ${c.green}Handle:${c.reset} @`);
   if (!handle) return;
 
-  const h = handle.startsWith("@") ? handle : `@${handle}`;
+  const h = normalizeHandle(handle);
   const { getSpawn } = await import("./spawner.js");
   const spawn = getSpawn(db, h);
 
@@ -391,7 +392,7 @@ async function actionTeamCreate(rc: BoardRC, rl: readline.Interface) {
 
   const body: Record<string, string> = { name };
   if (mission) body.mission = mission;
-  if (manager) body.manager = manager.startsWith("@") ? manager : `@${manager}`;
+  if (manager) body.manager = normalizeHandle(manager);
 
   const res = await api<Team>(rc, "POST", "/api/teams", body);
   if (res.ok) {
@@ -434,7 +435,7 @@ async function actionRouteCreate(rc: BoardRC, rl: readline.Interface) {
 
   const body: Record<string, string> = { name };
   if (teamName) body.team_name = teamName;
-  if (agent) body.agent_handle = agent.startsWith("@") ? agent : `@${agent}`;
+  if (agent) body.agent_handle = normalizeHandle(agent);
 
   const res = await api<Route>(rc, "POST", "/api/routes", body);
   if (res.ok) {

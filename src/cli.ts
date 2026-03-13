@@ -2,6 +2,7 @@ import { Command } from "commander";
 import fs from "fs";
 import path from "path";
 import { initDb, dbExists } from "./db.js";
+import { normalizeHandle } from "./agents.js";
 import { generateKey, hashKey } from "./auth.js";
 import { parseDuration } from "./supervision.js";
 import {
@@ -34,7 +35,31 @@ import type { BriefingSummary } from "./supervision.js";
 import type { PostThread } from "./posts.js";
 import type { DagSummary, PromoteResult } from "./gitdag.js";
 import { execSync, spawn as nodeSpawn } from "child_process";
-import { runPreFlight, buildSprintReport, SPRINT_REPORT_PROTOCOL } from "./sprint-orchestrator.js";
+import { runPreFlight, buildSprintReport, SPRINT_REPORT_PROTOCOL, mergeWithTestGates } from "./sprint-orchestrator.js";
+
+// === Error classes ===
+
+export class CliError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CliError";
+  }
+}
+
+export class ApiError extends CliError {
+  status: number;
+  serverError: string;
+  constructor(status: number, serverError: string) {
+    super(`API error (${status}): ${serverError}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.serverError = serverError;
+  }
+}
+
+function die(message: string): never {
+  throw new CliError(message);
+}
 
 // === .boardrc ===
 
@@ -62,10 +87,7 @@ function writeBoardRC(rc: BoardRC): void {
 
 function requireRC(): BoardRC {
   const rc = readBoardRC();
-  if (!rc) {
-    console.error("No .boardrc found. Run `board init` first.");
-    process.exit(1);
-  }
+  if (!rc) die("No .boardrc found. Run `board init` first.");
   return rc;
 }
 
@@ -94,7 +116,7 @@ async function api<T>(
   method: string,
   endpoint: string,
   body?: unknown
-): Promise<{ ok: boolean; status: number; data: T }> {
+): Promise<T> {
   const url = `${rc.url}${endpoint}`;
   const headers: Record<string, string> = {
     Authorization: `Bearer ${rc.key}`,
@@ -110,19 +132,24 @@ async function api<T>(
     });
   } catch (err: any) {
     if (err.cause?.code === "ECONNREFUSED" || err.message?.includes("fetch failed")) {
-      console.error(`Cannot connect to server at ${rc.url}. Is \`board serve\` running?`);
-      process.exit(1);
+      die(`Cannot connect to server at ${rc.url}. Is \`board serve\` running?`);
     }
     throw err;
   }
 
-  let data: T;
+  let data: unknown;
   try {
-    data = (await res.json()) as T;
+    data = await res.json();
   } catch {
-    throw new Error(`Server returned non-JSON response (${res.status} ${res.statusText})`);
+    throw new CliError(`Server returned non-JSON response (${res.status} ${res.statusText})`);
   }
-  return { ok: res.ok, status: res.status, data };
+
+  if (!res.ok) {
+    const errorMsg = (data as any)?.error ?? `HTTP ${res.status}`;
+    throw new ApiError(res.status, errorMsg);
+  }
+
+  return data as T;
 }
 
 // === CLI ===
@@ -206,8 +233,7 @@ program
     const { getDb } = await import("./db.js");
 
     if (!dbExists()) {
-      console.error("No board found. Run `board init` first.");
-      process.exit(1);
+      die("No board found. Run `board init` first.");
     }
 
     const db = getDb();
@@ -240,19 +266,15 @@ agent
   .option("--role <role>", "Agent role (manager, worker, solo)", "solo")
   .action(async (handle: string, opts: { mission: string; name?: string; role?: string }) => {
     const rc = requireRC();
-    const res = await api<Agent & { api_key: string }>(rc, "POST", "/api/agents", {
+    const agent = await api<Agent & { api_key: string }>(rc, "POST", "/api/agents", {
       handle,
       name: opts.name,
       role: opts.role,
       mission: opts.mission,
     });
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(`Created agent ${res.data.handle}`);
-    console.log(`API key: ${res.data.api_key}`);
-    console.log(renderAgent(res.data));
+    console.log(`Created agent ${agent.handle}`);
+    console.log(`API key: ${agent.api_key}`);
+    console.log(renderAgent(agent));
   });
 
 agent
@@ -262,12 +284,8 @@ agent
   .action(async (opts: { status?: string }) => {
     const rc = requireRC();
     const qs = opts.status ? `?status=${opts.status}` : "";
-    const res = await api<Agent[]>(rc, "GET", `/api/agents${qs}`);
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderAgentList(res.data));
+    const agents = await api<Agent[]>(rc, "GET", `/api/agents${qs}`);
+    console.log(renderAgentList(agents));
   });
 
 agent
@@ -275,13 +293,9 @@ agent
   .description("Show agent details")
   .action(async (handle: string) => {
     const rc = requireRC();
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
-    const res = await api<Agent>(rc, "GET", `/api/agents/${encodeURIComponent(h)}`);
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderAgent(res.data));
+    const h = normalizeHandle(handle);
+    const agent = await api<Agent>(rc, "GET", `/api/agents/${encodeURIComponent(h)}`);
+    console.log(renderAgent(agent));
   });
 
 agent
@@ -292,18 +306,14 @@ agent
   .option("--status <status>", "New status")
   .action(async (handle: string, opts: { name?: string; mission?: string; status?: string }) => {
     const rc = requireRC();
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
+    const h = normalizeHandle(handle);
     const body: Record<string, string> = {};
     if (opts.name) body.name = opts.name;
     if (opts.mission) body.mission = opts.mission;
     if (opts.status) body.status = opts.status;
-    const res = await api<Agent>(rc, "PATCH", `/api/agents/${encodeURIComponent(h)}`, body);
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(`Updated ${res.data.handle}`);
-    console.log(renderAgent(res.data));
+    const agent = await api<Agent>(rc, "PATCH", `/api/agents/${encodeURIComponent(h)}`, body);
+    console.log(`Updated ${agent.handle}`);
+    console.log(renderAgent(agent));
   });
 
 // --- board channel ---
@@ -315,14 +325,10 @@ channel
   .option("--description <desc>", "Channel description")
   .action(async (name: string, opts: { description?: string }) => {
     const rc = requireRC();
-    const res = await api(rc, "POST", "/api/channels", {
+    await api(rc, "POST", "/api/channels", {
       name,
       description: opts.description,
     });
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
     console.log(`Created channel ${name.startsWith("#") ? name : "#" + name}`);
   });
 
@@ -331,14 +337,10 @@ channel
   .description("List all channels")
   .action(async () => {
     const rc = requireRC();
-    const res = await api<{ name: string; description: string | null; priority: number }[]>(
+    const channels = await api<{ name: string; description: string | null; priority: number }[]>(
       rc, "GET", "/api/channels"
     );
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderChannelList(res.data));
+    console.log(renderChannelList(channels));
   });
 
 channel
@@ -347,13 +349,9 @@ channel
   .action(async (name: string, priority: string) => {
     const rc = requireRC();
     const n = name.startsWith("#") ? name : `#${name}`;
-    const res = await api(rc, "PUT", `/api/channels/${encodeURIComponent(n)}/priority`, {
+    await api(rc, "PUT", `/api/channels/${encodeURIComponent(n)}/priority`, {
       priority: parseInt(priority, 10),
     });
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
     console.log(`Set ${n} priority to ${priority}`);
   });
 
@@ -363,16 +361,12 @@ program
   .description("Create a post as an agent")
   .action(async (handle: string, channelName: string, content: string) => {
     const rc = requireRC();
-    const res = await api<Post>(rc, "POST", "/api/posts", {
+    const post = await api<Post>(rc, "POST", "/api/posts", {
       author: handle,
       channel: channelName,
       content,
     });
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(`Posted ${res.data.id.slice(0, 8)} by ${res.data.author} in ${res.data.channel}`);
+    console.log(`Posted ${post.id.slice(0, 8)} by ${post.author} in ${post.channel}`);
   });
 
 // --- board reply ---
@@ -383,21 +377,13 @@ program
     const rc = requireRC();
     // Get the parent post to find its channel
     const parent = await api<Post>(rc, "GET", `/api/posts/${postId}`);
-    if (!parent.ok) {
-      console.error(`Error: parent post not found`);
-      process.exit(1);
-    }
-    const res = await api<Post>(rc, "POST", "/api/posts", {
+    const reply = await api<Post>(rc, "POST", "/api/posts", {
       author: handle,
-      channel: parent.data.channel,
+      channel: parent.channel,
       content,
       parent_id: postId,
     });
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(`Reply ${res.data.id.slice(0, 8)} by ${res.data.author}`);
+    console.log(`Reply ${reply.id.slice(0, 8)} by ${reply.author}`);
   });
 
 // --- board feed ---
@@ -416,19 +402,14 @@ program
     if (opts.since) {
       const ts = parseDuration(opts.since);
       if (!ts) {
-        console.error(`Invalid duration: ${opts.since}. Use format like 1h, 30m, 2d`);
-        process.exit(1);
+        die(`Invalid duration: ${opts.since}. Use format like 1h, 30m, 2d`);
       }
       params.set("since", ts);
     }
     params.set("limit", opts.limit);
     const qs = params.toString() ? `?${params.toString()}` : "";
-    const res = await api<RankedPost[]>(rc, "GET", `/api/feed${qs}`);
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderFeed(res.data));
+    const feed = await api<RankedPost[]>(rc, "GET", `/api/feed${qs}`);
+    console.log(renderFeed(feed));
   });
 
 // --- board briefing ---
@@ -437,12 +418,8 @@ program
   .description("Show what happened since your last briefing")
   .action(async () => {
     const rc = requireRC();
-    const res = await api<BriefingSummary>(rc, "GET", "/api/briefing");
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderBriefing(res.data));
+    const briefing = await api<BriefingSummary>(rc, "GET", "/api/briefing");
+    console.log(renderBriefing(briefing));
   });
 
 // --- board direct ---
@@ -451,32 +428,25 @@ program
   .description("Post a directive as @admin (auto-threads to agent's latest post)")
   .action(async (handle: string, channelName: string, message: string) => {
     const rc = requireRC();
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
+    const h = normalizeHandle(handle);
     const ch = channelName.startsWith("#") ? channelName : `#${channelName}`;
 
     // Find agent's latest post in that channel to thread onto
-    const postsRes = await api<Post[]>(
+    const posts = await api<Post[]>(
       rc, "GET",
       `/api/posts?author=${encodeURIComponent(h)}&channel=${encodeURIComponent(ch)}&top_level=true&limit=1`
     );
 
-    let parentId: string | undefined;
-    if (postsRes.ok && postsRes.data.length > 0) {
-      parentId = postsRes.data[0].id;
-    }
+    const parentId = posts.length > 0 ? posts[0].id : undefined;
 
-    const res = await api<Post>(rc, "POST", "/api/posts", {
+    const directive = await api<Post>(rc, "POST", "/api/posts", {
       author: "@admin",
       channel: ch,
       content: message,
       parent_id: parentId,
     });
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
     const threaded = parentId ? ` (threaded to ${parentId.slice(0, 8)})` : "";
-    console.log(`Directive ${res.data.id.slice(0, 8)} → ${h} in ${ch}${threaded}`);
+    console.log(`Directive ${directive.id.slice(0, 8)} → ${h} in ${ch}${threaded}`);
   });
 
 // --- board thread ---
@@ -485,12 +455,8 @@ program
   .description("Show a post thread")
   .action(async (postId: string) => {
     const rc = requireRC();
-    const res = await api<PostThread>(rc, "GET", `/api/posts/${postId}/thread`);
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderThread(res.data));
+    const thread = await api<PostThread>(rc, "GET", `/api/posts/${postId}/thread`);
+    console.log(renderThread(thread));
   });
 
 // --- board profile ---
@@ -499,20 +465,15 @@ program
   .description("Show an agent's profile and posts")
   .action(async (handle: string) => {
     const rc = requireRC();
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
+    const h = normalizeHandle(handle);
 
     // Fetch agent and posts in parallel
-    const [agentRes, postsRes] = await Promise.all([
+    const [agent, posts] = await Promise.all([
       api<Agent>(rc, "GET", `/api/agents/${encodeURIComponent(h)}`),
       api<Post[]>(rc, "GET", `/api/posts?author=${encodeURIComponent(h)}&limit=20`),
     ]);
 
-    if (!agentRes.ok) {
-      console.error(`Agent ${h} not found`);
-      process.exit(1);
-    }
-
-    console.log(renderProfile(agentRes.data, postsRes.ok ? postsRes.data : []));
+    console.log(renderProfile(agent, posts));
   });
 
 // --- board commit ---
@@ -522,15 +483,11 @@ program
   .option("--files <files...>", "Files changed")
   .action(async (hash: string, postId: string, opts: { files?: string[] }) => {
     const rc = requireRC();
-    const res = await api(rc, "POST", "/api/commits", {
+    await api(rc, "POST", "/api/commits", {
       hash,
       post_id: postId,
       files: opts.files,
     });
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
     console.log(`Linked commit ${hash.slice(0, 8)} to post ${postId.slice(0, 8)}`);
   });
 
@@ -546,15 +503,11 @@ program
     const rc = requireRC();
 
     // Create agent via API
-    const res = await api<Agent & { api_key: string }>(rc, "POST", "/api/agents", {
+    const created = await api<Agent & { api_key: string }>(rc, "POST", "/api/agents", {
       handle,
       name: opts.name,
       mission: opts.mission,
     });
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
 
     const { spawnAgent } = await import("./spawner.js");
     const { getDb } = await import("./db.js");
@@ -565,10 +518,8 @@ program
     if (opts.identity) {
       const identityPath = path.join(process.cwd(), "identities", `${opts.identity}.md`);
       if (!fs.existsSync(identityPath)) {
-        console.error(`Identity not found: ${opts.identity}`);
-        console.error(`Available identities: board identity list`);
         db.close();
-        process.exit(1);
+        die(`Identity not found: ${opts.identity}\nAvailable identities: board identity list`);
       }
       const identityContent = fs.readFileSync(identityPath, "utf-8");
       mission = `[Identity: ${opts.identity}]\n${identityContent}\n\n${opts.mission}`;
@@ -576,16 +527,16 @@ program
 
     try {
       const result = spawnAgent(db, {
-        handle: res.data.handle,
+        handle: created.handle,
         mission,
-        apiKey: res.data.api_key,
+        apiKey: created.api_key,
         serverUrl: rc.url,
         projectDir: process.cwd(),
         foreground: opts.foreground,
       });
 
       if (opts.foreground) {
-        console.log(`Running ${res.data.handle} in foreground (PID ${result.pid})`);
+        console.log(`Running ${created.handle} in foreground (PID ${result.pid})`);
         console.log(`  Branch:   ${result.branch}`);
         console.log(`  Worktree: ${result.worktreePath}\n`);
         // Wait for child to exit
@@ -596,16 +547,15 @@ program
           });
         });
       } else {
-        console.log(`Spawned ${res.data.handle} (PID ${result.pid})`);
+        console.log(`Spawned ${created.handle} (PID ${result.pid})`);
         console.log(`  Branch:   ${result.branch}`);
         console.log(`  Worktree: ${result.worktreePath}`);
         console.log(`  Logs:     ${result.worktreePath}/agent.log`);
         db.close();
       }
     } catch (err: any) {
-      console.error(`Spawn failed: ${err.message}`);
       db.close();
-      process.exit(1);
+      die(`Spawn failed: ${err.message}`);
     }
   });
 
@@ -617,14 +567,13 @@ program
     const { killAgent } = await import("./spawner.js");
     const { getDb } = await import("./db.js");
     const db = getDb();
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
+    const h = normalizeHandle(handle);
 
     try {
       killAgent(db, h, process.cwd());
       console.log(`Killed ${h}`);
     } catch (err: any) {
-      console.error(`Error: ${err.message}`);
-      process.exit(1);
+      throw new CliError(`Error: ${err.message}`);
     } finally {
       db.close();
     }
@@ -664,14 +613,12 @@ program
 
     const poll = async () => {
       try {
-        const res = await api<RankedPost[]>(rc, "GET", "/api/feed?limit=20");
-        if (res.ok) {
-          // Clear screen and move cursor to top
-          process.stdout.write("\x1b[2J\x1b[H");
-          const now = new Date().toLocaleTimeString();
-          console.log(`\x1b[1mAgentBoard Feed\x1b[0m  \x1b[90m${now}  (Ctrl+C to exit)\x1b[0m\n`);
-          console.log(renderFeed(res.data));
-        }
+        const feed = await api<RankedPost[]>(rc, "GET", "/api/feed?limit=20");
+        // Clear screen and move cursor to top
+        process.stdout.write("\x1b[2J\x1b[H");
+        const now = new Date().toLocaleTimeString();
+        console.log(`\x1b[1mAgentBoard Feed\x1b[0m  \x1b[90m${now}  (Ctrl+C to exit)\x1b[0m\n`);
+        console.log(renderFeed(feed));
       } catch {
         process.stdout.write("\x1b[2J\x1b[H");
         console.log("\x1b[33mConnection lost, retrying...\x1b[0m");
@@ -689,10 +636,9 @@ program
   .action(async () => {
     const rc = requireRC();
 
-    const [agentsRes, channelsRes, feedRes] = await Promise.all([
+    const [agents, channels] = await Promise.all([
       api<Agent[]>(rc, "GET", "/api/agents"),
       api<{ name: string; description: string | null; priority: number }[]>(rc, "GET", "/api/channels"),
-      api<RankedPost[]>(rc, "GET", "/api/feed?limit=0"),
     ]);
 
     // Get spawn info from local DB
@@ -701,9 +647,6 @@ program
     const db = getDb();
     const spawns = listSpawns(db);
     db.close();
-
-    const agents = agentsRes.ok ? agentsRes.data : [];
-    const channels = channelsRes.ok ? channelsRes.data : [];
 
     const spawnInfos: SpawnInfo[] = spawns.map((s) => ({
       agent_handle: s.agent_handle,
@@ -714,8 +657,8 @@ program
     }));
 
     // Count posts via feed endpoint (total)
-    const postsRes = await api<Post[]>(rc, "GET", "/api/posts?limit=0");
-    const postCount = postsRes.ok ? postsRes.data.length : 0;
+    const allPosts = await api<Post[]>(rc, "GET", "/api/posts?limit=0");
+    const postCount = allPosts.length;
 
     console.log(renderStatus({
       agents: {
@@ -739,7 +682,7 @@ program
     const { mergeAgent, getSpawn } = await import("./spawner.js");
     const { getDb } = await import("./db.js");
     const db = getDb();
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
+    const h = normalizeHandle(handle);
 
     try {
       const result = mergeAgent(db, h, process.cwd(), { cleanup: opts.cleanup });
@@ -748,8 +691,7 @@ program
         console.log(`Cleaned up worktree and branch`);
       }
     } catch (err: any) {
-      console.error(`Error: ${err.message}`);
-      process.exit(1);
+      throw new CliError(`Error: ${err.message}`);
     } finally {
       db.close();
     }
@@ -764,18 +706,16 @@ program
     const { getSpawn } = await import("./spawner.js");
     const { getDb } = await import("./db.js");
     const db = getDb();
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
+    const h = normalizeHandle(handle);
 
     const spawn = getSpawn(db, h);
     db.close();
 
     if (!spawn) {
-      console.error(`No spawn record for ${h}`);
-      process.exit(1);
+      die(`No spawn record for ${h}`);
     }
     if (!spawn.log_path || !fs.existsSync(spawn.log_path)) {
-      console.error(`Log file not found: ${spawn.log_path}`);
-      process.exit(1);
+      die(`Log file not found: ${spawn.log_path}`);
     }
 
     const lines = parseInt(opts.lines, 10);
@@ -798,8 +738,7 @@ program
     try {
       execSync("which tmux", { stdio: "pipe" });
     } catch {
-      console.error("tmux not found. Install it: brew install tmux");
-      process.exit(1);
+      die("tmux not found. Install it: brew install tmux");
     }
 
     const { listSpawns, isProcessAlive } = await import("./spawner.js");
@@ -810,8 +749,7 @@ program
     db.close();
 
     if (spawns.length === 0) {
-      console.error("No active agents. Spawn some first with `board spawn`.");
-      process.exit(1);
+      die("No active agents. Spawn some first with `board spawn`.");
     }
 
     const session = opts.session;
@@ -868,16 +806,12 @@ program
   .option("--agent <handle>", "Filter by agent")
   .action(async (opts: { agent?: string }) => {
     const rc = requireRC();
-    const [commitsRes, leavesRes] = await Promise.all([
+    const [commits, leaves] = await Promise.all([
       api<DagCommit[]>(rc, "GET", `/api/git/commits?limit=200${opts.agent ? `&agent=${encodeURIComponent(opts.agent)}` : ""}`),
       api<DagCommit[]>(rc, "GET", `/api/git/leaves${opts.agent ? `?agent=${encodeURIComponent(opts.agent)}` : ""}`),
     ]);
-    if (!commitsRes.ok) {
-      console.error(`Error: ${(commitsRes.data as any).error}`);
-      process.exit(1);
-    }
-    const leafSet = new Set((leavesRes.ok ? leavesRes.data : []).map((l) => l.hash));
-    console.log(renderDagTree(commitsRes.data, leafSet));
+    const leafSet = new Set(leaves.map((l) => l.hash));
+    console.log(renderDagTree(commits, leafSet));
   });
 
 // --- board dag log ---
@@ -893,12 +827,8 @@ dag
     const params = new URLSearchParams();
     if (opts.agent) params.set("agent", opts.agent);
     params.set("limit", opts.limit);
-    const res = await api<DagCommit[]>(rc, "GET", `/api/git/commits?${params.toString()}`);
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderDagLog(res.data));
+    const commits = await api<DagCommit[]>(rc, "GET", `/api/git/commits?${params.toString()}`);
+    console.log(renderDagLog(commits));
   });
 
 dag
@@ -908,16 +838,12 @@ dag
   .action(async (opts: { agent?: string }) => {
     const rc = requireRC();
     const qs = opts.agent ? `?agent=${encodeURIComponent(opts.agent)}` : "";
-    const res = await api<DagCommit[]>(rc, "GET", `/api/git/leaves${qs}`);
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    if (res.data.length === 0) {
+    const leaves = await api<DagCommit[]>(rc, "GET", `/api/git/leaves${qs}`);
+    if (leaves.length === 0) {
       console.log("  No leaves (DAG is empty).");
     } else {
-      console.log(`${res.data.length} active frontier${res.data.length !== 1 ? "s" : ""}:\n`);
-      console.log(renderDagLog(res.data));
+      console.log(`${leaves.length} active frontier${leaves.length !== 1 ? "s" : ""}:\n`);
+      console.log(renderDagLog(leaves));
     }
   });
 
@@ -933,13 +859,11 @@ dag
       });
       if (!res.ok) {
         const err = await res.json();
-        console.error(`Error: ${(err as any).error}`);
-        process.exit(1);
+        die(`Error: ${(err as any).error}`);
       }
       console.log(await res.text());
     } catch (err: any) {
-      console.error(`Cannot connect to server: ${err.message}`);
-      process.exit(1);
+      die(`Cannot connect to server: ${err.message}`);
     }
   });
 
@@ -948,12 +872,8 @@ dag
   .description("Promote a DAG commit to main (cherry-pick)")
   .action(async (hash: string) => {
     const rc = requireRC();
-    const res = await api<PromoteResult>(rc, "POST", "/api/git/promote", { hash });
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderPromoteSummary(res.data));
+    const result = await api<PromoteResult>(rc, "POST", "/api/git/promote", { hash });
+    console.log(renderPromoteSummary(result));
   });
 
 dag
@@ -961,12 +881,8 @@ dag
   .description("Show DAG summary")
   .action(async () => {
     const rc = requireRC();
-    const res = await api<DagSummary>(rc, "GET", "/data/dag");
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderDagSummary(res.data));
+    const summary = await api<DagSummary>(rc, "GET", "/data/dag");
+    console.log(renderDagSummary(summary));
   });
 
 // --- board team ---
@@ -979,17 +895,13 @@ team
   .option("--mission <mission>", "Team mission")
   .action(async (name: string, opts: { manager?: string; mission?: string }) => {
     const rc = requireRC();
-    const res = await api<Team>(rc, "POST", "/api/teams", {
+    const created = await api<Team>(rc, "POST", "/api/teams", {
       name,
       manager: opts.manager,
       mission: opts.mission,
     });
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(`Created team ${res.data.name}`);
-    console.log(renderTeam(res.data));
+    console.log(`Created team ${created.name}`);
+    console.log(renderTeam(created));
   });
 
 team
@@ -997,12 +909,8 @@ team
   .description("List all teams")
   .action(async () => {
     const rc = requireRC();
-    const res = await api<Team[]>(rc, "GET", "/api/teams");
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderTeamList(res.data));
+    const teams = await api<Team[]>(rc, "GET", "/api/teams");
+    console.log(renderTeamList(teams));
   });
 
 team
@@ -1010,14 +918,10 @@ team
   .description("Show team details")
   .action(async (name: string) => {
     const rc = requireRC();
-    const res = await api<Team & { members?: TeamMember[] }>(
+    const team = await api<Team & { members?: TeamMember[] }>(
       rc, "GET", `/api/teams/${encodeURIComponent(name)}`
     );
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderTeam(res.data));
+    console.log(renderTeam(team));
   });
 
 team
@@ -1025,14 +929,10 @@ team
   .description("Add a member to a team")
   .action(async (name: string, handle: string) => {
     const rc = requireRC();
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
-    const res = await api<TeamMember>(
+    const h = normalizeHandle(handle);
+    await api<TeamMember>(
       rc, "POST", `/api/teams/${encodeURIComponent(name)}/members`, { agent_handle: h }
     );
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
     console.log(`Added ${h} to team ${name}`);
   });
 
@@ -1041,14 +941,10 @@ team
   .description("Remove a member from a team")
   .action(async (name: string, handle: string) => {
     const rc = requireRC();
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
-    const res = await api(
+    const h = normalizeHandle(handle);
+    await api(
       rc, "DELETE", `/api/teams/${encodeURIComponent(name)}/members/${encodeURIComponent(h)}`
     );
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
     console.log(`Removed ${h} from team ${name}`);
   });
 
@@ -1062,17 +958,13 @@ route
   .option("--agent <handle>", "Agent handle")
   .action(async (name: string, opts: { team?: string; agent?: string }) => {
     const rc = requireRC();
-    const res = await api<Route>(rc, "POST", "/api/routes", {
+    const created = await api<Route>(rc, "POST", "/api/routes", {
       name,
       team_name: opts.team,
       agent_handle: opts.agent,
     });
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(`Created route ${res.data.name}`);
-    console.log(renderRoute(res.data));
+    console.log(`Created route ${created.name}`);
+    console.log(renderRoute(created));
   });
 
 route
@@ -1082,12 +974,8 @@ route
   .action(async (opts: { team?: string }) => {
     const rc = requireRC();
     const qs = opts.team ? `?team=${encodeURIComponent(opts.team)}` : "";
-    const res = await api<Route[]>(rc, "GET", `/api/routes${qs}`);
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderRouteList(res.data));
+    const routes = await api<Route[]>(rc, "GET", `/api/routes${qs}`);
+    console.log(renderRouteList(routes));
   });
 
 route
@@ -1098,13 +986,9 @@ route
     const rc = requireRC();
     const body: Record<string, string> = {};
     if (opts.status) body.status = opts.status;
-    const res = await api<Route>(rc, "PATCH", `/api/routes/${encodeURIComponent(id)}`, body);
-    if (!res.ok) {
-      console.error(`Error: ${(res.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(`Updated route ${res.data.name}`);
-    console.log(renderRoute(res.data));
+    const route = await api<Route>(rc, "PATCH", `/api/routes/${encodeURIComponent(id)}`, body);
+    console.log(`Updated route ${route.name}`);
+    console.log(renderRoute(route));
   });
 
 // --- board org ---
@@ -1113,18 +997,11 @@ program
   .description("Bird's-eye view of all teams and routes")
   .action(async () => {
     const rc = requireRC();
-    const [teamsRes, routesRes] = await Promise.all([
+    const [teams, routes] = await Promise.all([
       api<(Team & { members?: TeamMember[] })[]>(rc, "GET", "/api/teams?include=members"),
       api<Route[]>(rc, "GET", "/api/routes"),
     ]);
-    if (!teamsRes.ok) {
-      console.error(`Error: ${(teamsRes.data as any).error}`);
-      process.exit(1);
-    }
-    console.log(renderOrg(
-      teamsRes.ok ? teamsRes.data : [],
-      routesRes.ok ? routesRes.data : [],
-    ));
+    console.log(renderOrg(teams, routes));
   });
 
 // --- board diff ---
@@ -1136,18 +1013,16 @@ program
     const { getSpawn } = await import("./spawner.js");
     const { getDb } = await import("./db.js");
     const db = getDb();
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
+    const h = normalizeHandle(handle);
 
     const spawn = getSpawn(db, h);
     db.close();
 
     if (!spawn) {
-      console.error(`No spawn record for ${h}`);
-      process.exit(1);
+      die(`No spawn record for ${h}`);
     }
     if (!spawn.branch) {
-      console.error(`No branch recorded for ${h}`);
-      process.exit(1);
+      die(`No branch recorded for ${h}`);
     }
 
     try {
@@ -1159,8 +1034,7 @@ program
       });
       console.log(output || "(no changes)");
     } catch (err: any) {
-      console.error(`Error running git diff: ${err.message}`);
-      process.exit(1);
+      die(`Error running git diff: ${err.message}`);
     }
   });
 
@@ -1173,18 +1047,16 @@ program
     const { getSpawn } = await import("./spawner.js");
     const { getDb } = await import("./db.js");
     const db = getDb();
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
+    const h = normalizeHandle(handle);
 
     const spawn = getSpawn(db, h);
     db.close();
 
     if (!spawn) {
-      console.error(`No spawn record for ${h}`);
-      process.exit(1);
+      die(`No spawn record for ${h}`);
     }
     if (!spawn.log_path || !fs.existsSync(spawn.log_path)) {
-      console.error(`Log file not found: ${spawn.log_path}`);
-      process.exit(1);
+      die(`Log file not found: ${spawn.log_path}`);
     }
 
     if (opts.follow) {
@@ -1253,22 +1125,19 @@ program
     const pf = await runPreFlight(projectDir);
 
     if (!pf.allStopped) {
-      console.error(`Pre-flight failed: running agents: ${pf.running.map((s) => s.agent_handle).join(", ")}`);
-      console.error("Stop all agents before merging.");
-      process.exit(1);
+      die(`Pre-flight failed: running agents: ${pf.running.map((s) => s.agent_handle).join(", ")}\nStop all agents before merging.`);
     }
     console.log("Pre-flight: all agents stopped.");
 
     if (!pf.testsPass) {
-      console.error("Pre-flight failed: tests do not pass on main.");
-      process.exit(1);
+      die("Pre-flight failed: tests do not pass on main.");
     }
     console.log("Pre-flight: tests pass.");
 
     // Determine merge order
     let mergeOrder: string[];
     if (opts.order) {
-      mergeOrder = opts.order.split(",").map((h) => h.trim().startsWith("@") ? h.trim() : `@${h.trim()}`);
+      mergeOrder = opts.order.split(",").map((h) => normalizeHandle(h.trim()));
     } else {
       mergeOrder = pf.mergeOrder;
     }
@@ -1290,51 +1159,27 @@ program
     }
 
     // === Merge each branch ===
-    const { mergeAgent } = await import("./spawner.js");
     const { getDb } = await import("./db.js");
     const db = getDb();
-    const merged: string[] = [];
 
-    for (const handle of mergeOrder) {
-      console.log(`\nMerging ${handle}...`);
-      try {
-        const result = mergeAgent(db, handle, projectDir);
-        console.log(`  Merged ${result.branch} (${result.mergedCommits} commits)`);
-      } catch (err: any) {
-        console.error(`  Merge failed for ${handle}: ${err.message}`);
-        db.close();
-        process.exit(1);
-      }
-
-      // Run tests after merge
-      try {
-        execSync("npm test", { cwd: projectDir, stdio: "pipe", timeout: 120_000 });
-        console.log(`  Tests pass after merging ${handle}.`);
-        merged.push(handle);
-      } catch {
-        console.error(`  Tests FAILED after merging ${handle}. Reverting...`);
-        execSync("git reset --hard HEAD~1", { cwd: projectDir, stdio: "pipe" });
-        console.error(`  Reverted merge of ${handle}. Stopping.`);
-        db.close();
-        process.exit(1);
-      }
-    }
-
-    // === Post summary to #status ===
-    console.log(`\nAll ${merged.length} merges succeeded!`);
     try {
-      const rc = requireRC();
-      const summary = `Sprint merge complete: ${merged.join(", ")} merged successfully.`;
-      await api(rc, "POST", "/api/posts", {
-        content: summary,
-        channel: "#status",
-      });
-      console.log("Summary posted to #status.");
-    } catch {
-      console.log("(Could not post summary to #status)");
-    }
+      const { merged } = await mergeWithTestGates(mergeOrder, projectDir, { db });
 
-    db.close();
+      // Post summary to #status
+      console.log(`\nAll ${merged.length} merges succeeded!`);
+      try {
+        const rc = requireRC();
+        await api(rc, "POST", "/api/posts", {
+          content: `Sprint merge complete: ${merged.join(", ")} merged successfully.`,
+          channel: "#status",
+        });
+        console.log("Summary posted to #status.");
+      } catch {
+        console.log("(Could not post summary to #status)");
+      }
+    } finally {
+      db.close();
+    }
   });
 
 // --- board sprint ---
@@ -1352,22 +1197,14 @@ sprint
     }
 
     // 2. Read identities from identities/ folder
-    const identitiesDir = path.join(process.cwd(), "identities");
+    const { listIdentities, loadIdentity: loadId } = await import("./identities.js");
+    const identityNames = listIdentities(process.cwd());
     const agents: { name: string; description: string }[] = [];
-    if (fs.existsSync(identitiesDir)) {
-      const files = fs.readdirSync(identitiesDir).filter((f) => f.endsWith(".md"));
-      for (const file of files) {
-        const content = fs.readFileSync(path.join(identitiesDir, file), "utf-8");
-        const match = content.match(/^---\n([\s\S]*?)\n---/);
-        if (match) {
-          const frontmatter = match[1];
-          const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
-          const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
-          if (nameMatch && descMatch) {
-            agents.push({ name: nameMatch[1].trim(), description: descMatch[1].trim() });
-          }
-        }
-      }
+    for (const name of identityNames) {
+      try {
+        const id = loadId(name, process.cwd());
+        agents.push({ name: id.name, description: id.description });
+      } catch { /* skip malformed identities */ }
     }
 
     // 3. Output formatted prompt
@@ -1427,9 +1264,8 @@ sprint
     // Check sprint name doesn't already exist
     const existing = db.prepare("SELECT name FROM sprints WHERE name = ?").get(opts.name);
     if (existing) {
-      console.error(`Sprint "${opts.name}" already exists. Choose a different name.`);
       db.close();
-      process.exit(1);
+      die(`Sprint "${opts.name}" already exists. Choose a different name.`);
     }
 
     // Parse agent specs — support --plan (simple mode) or --agents/--yaml (full mode)
@@ -1440,24 +1276,21 @@ sprint
       // Simple plan mode: read JSON plan file with tasks array
       const planPath = path.resolve(opts.plan);
       if (!fs.existsSync(planPath)) {
-        console.error(`Plan file not found: ${planPath}`);
         db.close();
-        process.exit(1);
+        die(`Plan file not found: ${planPath}`);
       }
 
       let plan: { goal: string; tasks: { agent: string; handle: string; mission: string; scope: string[] }[] };
       try {
         plan = JSON.parse(fs.readFileSync(planPath, "utf-8"));
       } catch (err: any) {
-        console.error(`Invalid JSON in plan file: ${err.message}`);
         db.close();
-        process.exit(1);
+        die(`Invalid JSON in plan file: ${err.message}`);
       }
 
       if (!plan.tasks || !Array.isArray(plan.tasks)) {
-        console.error("Plan must contain a 'tasks' array.");
         db.close();
-        process.exit(1);
+        die("Plan must contain a 'tasks' array.");
       }
 
       // Validate scopes are disjoint
@@ -1475,12 +1308,8 @@ sprint
       }
 
       if (overlaps.length > 0) {
-        console.error("Scope overlap detected — aborting:");
-        for (const o of overlaps) {
-          console.error(`  - ${o}`);
-        }
         db.close();
-        process.exit(1);
+        die(`Scope overlap detected — aborting:\n${overlaps.map((o) => `  - ${o}`).join("\n")}`);
       }
 
       agentSpecs = plan.tasks.map((t) => ({
@@ -1499,28 +1328,24 @@ sprint
         if (!opts.name && parsed.name) opts.name = parsed.name;
         if (!opts.goal && parsed.goal) opts.goal = parsed.goal;
       } catch {
-        console.error(`Failed to parse sprint file: ${opts.yaml}`);
         db.close();
-        process.exit(1);
+        die(`Failed to parse sprint file: ${opts.yaml}`);
       }
     } else if (opts.agents) {
       try {
         agentSpecs = JSON.parse(opts.agents);
       } catch {
-        console.error("Invalid --agents JSON. Expected: [{\"handle\":\"@x\",\"mission\":\"...\"}]");
         db.close();
-        process.exit(1);
+        die("Invalid --agents JSON. Expected: [{\"handle\":\"@x\",\"mission\":\"...\"}]");
       }
     } else {
-      console.error("Provide --plan, --agents, or --yaml to define sprint agents.");
       db.close();
-      process.exit(1);
+      die("Provide --plan, --agents, or --yaml to define sprint agents.");
     }
 
     if (agentSpecs.length === 0) {
-      console.error("No agents defined for this sprint.");
       db.close();
-      process.exit(1);
+      die("No agents defined for this sprint.");
     }
 
     // Create sprint record
@@ -1534,7 +1359,7 @@ sprint
     const projectDir = process.cwd();
 
     for (const spec of agentSpecs) {
-      const handle = spec.handle.startsWith("@") ? spec.handle : `@${spec.handle}`;
+      const handle = normalizeHandle(spec.handle);
 
       try {
         // Create agent if doesn't exist
@@ -1604,7 +1429,7 @@ sprint
         // Mark sprint as failed
         db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(opts.name);
         db.close();
-        process.exit(1);
+        throw new CliError(`Failed to spawn ${handle}: ${err.message}`);
       }
     }
 
@@ -1635,8 +1460,7 @@ sprint
       const report = await buildSprintReport(name, process.cwd());
       console.log(renderSprintReport(report, opts.detail));
     } catch (err: any) {
-      console.error(err.message);
-      process.exit(1);
+      die(err.message);
     }
   });
 
@@ -1654,8 +1478,7 @@ sprint
     try {
       report = await buildSprintReport(name, projectDir);
     } catch (err: any) {
-      console.error(err.message);
-      process.exit(1);
+      die(err.message);
     }
 
     console.log(renderSprintReport(report, opts.detail));
@@ -1663,9 +1486,7 @@ sprint
     // Check all agents stopped
     const stillRunning = report.agents.filter((a) => a.alive && !a.stopped);
     if (stillRunning.length > 0) {
-      console.error(`\nCannot finish: ${stillRunning.map((a) => a.handle).join(", ")} still running.`);
-      console.error("Stop all agents first, then run sprint finish again.");
-      process.exit(1);
+      die(`\nCannot finish: ${stillRunning.map((a) => a.handle).join(", ")} still running.\nStop all agents first, then run sprint finish again.`);
     }
 
     // Run tests on main
@@ -1674,14 +1495,13 @@ sprint
       execSync("npm test", { cwd: projectDir, stdio: "pipe", timeout: 120_000 });
       console.log("Tests pass on main.");
     } catch {
-      console.error("Tests fail on main. Fix before merging.");
-      process.exit(1);
+      die("Tests fail on main. Fix before merging.");
     }
 
     // Determine merge order
     let mergeOrder: string[];
     if (opts.order) {
-      mergeOrder = opts.order.split(",").map((h) => h.trim().startsWith("@") ? h.trim() : `@${h.trim()}`);
+      mergeOrder = opts.order.split(",").map((h) => normalizeHandle(h.trim()));
     } else {
       mergeOrder = report.mergeOrder;
     }
@@ -1711,55 +1531,37 @@ sprint
     }
 
     // Sequential merge with test gates
-    const { mergeAgent } = await import("./spawner.js");
     const { getDb } = await import("./db.js");
     const db = getDb();
-    const merged: string[] = [];
+    const markFailed = () => {
+      db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
+    };
 
-    for (const handle of mergeOrder) {
-      console.log(`\nMerging ${handle}...`);
-      try {
-        const result = mergeAgent(db, handle, projectDir);
-        console.log(`  Merged ${result.branch} (${result.mergedCommits} commits)`);
-      } catch (err: any) {
-        console.error(`  Merge failed for ${handle}: ${err.message}`);
-        db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
-        db.close();
-        process.exit(1);
-      }
-
-      try {
-        execSync("npm test", { cwd: projectDir, stdio: "pipe", timeout: 120_000 });
-        console.log(`  Tests pass after merging ${handle}.`);
-        merged.push(handle);
-      } catch {
-        console.error(`  Tests FAILED after merging ${handle}. Reverting...`);
-        execSync("git reset --hard HEAD~1", { cwd: projectDir, stdio: "pipe" });
-        console.error(`  Reverted merge of ${handle}. Stopping.`);
-        db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
-        db.close();
-        process.exit(1);
-      }
-    }
-
-    // Mark sprint finished
-    db.prepare("UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
-
-    console.log(`\nSprint "${name}" complete! ${merged.length} branches merged.`);
-
-    // Post summary
     try {
-      const rc = requireRC();
-      await api(rc, "POST", "/api/posts", {
-        content: `Sprint "${name}" finished. Merged: ${merged.join(", ")}.`,
-        channel: "#status",
+      const { merged } = await mergeWithTestGates(mergeOrder, projectDir, {
+        db,
+        onFailure: markFailed,
       });
-      console.log("Summary posted to #status.");
-    } catch {
-      console.log("(Could not post summary to #status)");
-    }
 
-    db.close();
+      // Mark sprint finished
+      db.prepare("UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
+
+      console.log(`\nSprint "${name}" complete! ${merged.length} branches merged.`);
+
+      // Post summary
+      try {
+        const rc = requireRC();
+        await api(rc, "POST", "/api/posts", {
+          content: `Sprint "${name}" finished. Merged: ${merged.join(", ")}.`,
+          channel: "#status",
+        });
+        console.log("Summary posted to #status.");
+      } catch {
+        console.log("(Could not post summary to #status)");
+      }
+    } finally {
+      db.close();
+    }
   });
 
 // --- board steer ---
@@ -1768,7 +1570,7 @@ program
   .description("Send a directive to a running agent, or clear directives with --clear")
   .option("--clear", "Clear all directives for this agent")
   .action(async (handle: string, message: string | undefined, opts: { clear?: boolean }) => {
-    const h = handle.startsWith("@") ? handle : `@${handle}`;
+    const h = normalizeHandle(handle);
     const projectDir = process.cwd();
 
     if (opts.clear) {
@@ -1777,15 +1579,13 @@ program
         clearDirectives(projectDir, h);
         console.log(`Cleared directives for ${h}`);
       } catch (err: any) {
-        console.error(err.message);
-        process.exit(1);
+        die(err.message);
       }
       return;
     }
 
     if (!message) {
-      console.error("Message is required (or use --clear)");
-      process.exit(1);
+      die("Message is required (or use --clear)");
     }
 
     // Write directive to agent's CLAUDE.md Active Directives section
@@ -1794,8 +1594,7 @@ program
       writeDirective(projectDir, h, message);
       console.log(`Wrote directive to ${h}`);
     } catch (err: any) {
-      console.error(err.message);
-      process.exit(1);
+      die(err.message);
     }
 
     // Also post to #work for visibility
@@ -2024,8 +1823,7 @@ identity
   .action(async (name: string) => {
     const identityPath = path.join(process.cwd(), "identities", `${name}.md`);
     if (!fs.existsSync(identityPath)) {
-      console.error(`Identity not found: ${name}`);
-      process.exit(1);
+      die(`Identity not found: ${name}`);
     }
     console.log(fs.readFileSync(identityPath, "utf-8"));
   });
@@ -2101,16 +1899,14 @@ research
 
     const rc = readBoardRC();
     if (!rc) {
-      console.error("No .boardrc found. Run `board init` first.");
-      process.exit(1);
+      die("No .boardrc found. Run `board init` first.");
     }
 
     // Resolve preset → defaults → explicit overrides
     const presetName = opts.preset || "tests";
     const preset = METRIC_PRESETS[presetName];
     if (opts.preset && !preset) {
-      console.error(`Unknown preset: ${opts.preset}. Available: ${Object.keys(METRIC_PRESETS).join(", ")}`);
-      process.exit(1);
+      die(`Unknown preset: ${opts.preset}. Available: ${Object.keys(METRIC_PRESETS).join(", ")}`);
     }
     const resolvedMetric = {
       eval: opts.eval || preset.eval,
@@ -2128,9 +1924,8 @@ research
     // Check if this researcher is already running
     const existingSpawn = getSpawn(db, normalizedHandle);
     if (existingSpawn && !existingSpawn.stopped_at && isProcessAlive(existingSpawn.pid)) {
-      console.error(`Researcher is already running (PID ${existingSpawn.pid}). Use \`board research stop${opts.tag ? ` --tag ${opts.tag}` : ""}\` first.`);
       db.close();
-      process.exit(1);
+      die(`Researcher is already running (PID ${existingSpawn.pid}). Use \`board research stop${opts.tag ? ` --tag ${opts.tag}` : ""}\` first.`);
     }
 
     // Load researcher identity
@@ -2138,9 +1933,8 @@ research
     try {
       identity = loadIdentity("researcher", process.cwd());
     } catch {
-      console.error("Researcher identity not found at identities/researcher.md");
       db.close();
-      process.exit(1);
+      die("Researcher identity not found at identities/researcher.md");
     }
 
     // Build mission with metrics, focus, and scope
@@ -2210,9 +2004,8 @@ research
         console.log(`  Worktree: ${result.worktreePath}`);
       }
     } catch (err: any) {
-      console.error(`Failed to start researcher: ${err.message}`);
       db.close();
-      process.exit(1);
+      die(`Failed to start researcher: ${err.message}`);
     }
 
     if (opts.focus) console.log(`  Focus: ${opts.focus}`);
@@ -2363,38 +2156,29 @@ research
   .action(async (topic: string) => {
     const rc = readBoardRC();
     if (!rc) {
-      console.error("No .boardrc found. Run `board init` first.");
-      process.exit(1);
+      die("No .boardrc found. Run `board init` first.");
     }
 
     // Post a directive that the researcher will pick up
-    try {
-      const res = await fetch(`${rc.url}/api/posts`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${rc.key}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          content: `focus: ${topic}`,
-          channel: "#research",
-        }),
-      });
-      if (!res.ok) {
-        console.error(`Failed to post directive: ${res.status}`);
-        process.exit(1);
-      }
-      console.log(`Focus directive posted: "${topic}"`);
-      console.log("The researcher will pick this up in its next cycle.");
-    } catch (err: any) {
-      console.error(`Server not reachable: ${err.message}`);
-      process.exit(1);
-    }
+    await api(rc, "POST", "/api/posts", {
+      content: `focus: ${topic}`,
+      channel: "#research",
+    });
+    console.log(`Focus directive posted: "${topic}"`);
+    console.log("The researcher will pick this up in its next cycle.");
   });
 
 // If no subcommand given, launch interactive mode
 if (process.argv.length <= 2) {
   import("./interactive.js").then((m) => m.startInteractive());
 } else {
-  program.parse();
+  program.parseAsync().catch((err: unknown) => {
+    if (err instanceof CliError) {
+      console.error(err.message);
+      process.exit(1);
+    }
+    // Unexpected error — show stack trace
+    console.error(err);
+    process.exit(1);
+  });
 }

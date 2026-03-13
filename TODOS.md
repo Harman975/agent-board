@@ -76,6 +76,20 @@ Config complete: shebang via tsup banner, `"files": ["dist"]` in package.json, b
 **Effort:** S
 **Depends on:** Nothing
 
+### Extract CLI command groups from cli.ts (P2)
+**What:** Split cli.ts into separate files per command group: identity commands → `cli-identity.ts`, research commands → `cli-research.ts`, dag commands → `cli-dag.ts`, sprint commands → `cli-sprint.ts`. Each exports a function that registers commands on the program.
+**Why:** cli.ts is ~2200 lines after cleanup. While each command is independent, the file is hard to navigate. Commander.js supports `program.addCommand()` for modular registration.
+**Context:** The DRY cleanup (CliError, api() throws, normalizeHandle, withDb) is done. This is structural decomposition — each group is self-contained (identity: ~20 lines, research: ~200 lines, dag: ~150 lines, sprint: ~300 lines). Start with the largest group (sprint) and work inward.
+**Effort:** M
+**Depends on:** DRY cleanup (done)
+
+### Test coverage for hard-to-test exports (P2)
+**What:** Add tests for 7 untested exports that require subprocess mocking or git repo fixtures: `runPreFlight`, `buildSprintReport`, `mergeWithTestGates`, `promoteCommit`, `respawnAgent`, `isClaudeProcess`, `fetchBundle`.
+**Why:** These are core sprint and DAG operations with zero direct test coverage. They're tested indirectly through integration but not unit-tested for error paths.
+**Context:** Easy exports are now covered in `coverage.test.ts`. The hard ones need: (1) git repo with branches for runPreFlight/buildSprintReport/promoteCommit/fetchBundle, (2) subprocess mocking for respawnAgent/isClaudeProcess, (3) `npm test` mocking for mergeWithTestGates. Use the spawner.test.ts pattern of dependency injection where possible.
+**Effort:** L
+**Depends on:** Nothing
+
 ---
 
 ## Sprint Polish — P2

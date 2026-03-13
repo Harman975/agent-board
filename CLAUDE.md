@@ -35,9 +35,10 @@ Foundation is a dumb pipe. Supervision reads from foundation + its own tables.
   ├── render.ts        CLI output formatting + ANSI colors
   ├── interactive.ts   Interactive TUI menu for sprint monitoring
   ├── dashboard.ts     Web dashboard HTML generation
-  ├── sprint-orchestrator.ts  Sprint pre-flight, report building, report protocol
-  ├── cli.ts           CLI commands — steer, alerts, cleanup
+  ├── sprint-orchestrator.ts  Sprint pre-flight, report building, merge gates, numstat parsing
+  ├── cli.ts           CLI commands — steer, alerts, cleanup (CliError/ApiError for error handling)
   ├── db.test.ts       Foundation + supervision data layer tests
+  ├── coverage.test.ts Coverage tests for previously untested exports
   ├── m2.test.ts       Org structure (teams, routes) tests
   ├── server.test.ts   HTTP API endpoint tests
   ├── spawner.test.ts  Spawner + worktree tests

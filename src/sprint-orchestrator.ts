@@ -1,6 +1,51 @@
 import { execSync } from "child_process";
+import type Database from "better-sqlite3";
 import type { Sprint, SprintAgent, SprintReport, SprintAgentReport, SprintBranch } from "./types.js";
 import { parseAgentReport } from "./render.js";
+
+// === Shared git diff parsing ===
+
+export interface NumstatResult {
+  additions: number;
+  deletions: number;
+  filesChanged: number;
+  files: Set<string>;
+}
+
+/**
+ * Parse `git diff --numstat` output for a branch vs main.
+ * Returns null if the branch doesn't exist.
+ */
+export function parseNumstat(projectDir: string, branch: string): NumstatResult | null {
+  try {
+    const raw = execSync(`git diff --numstat main..${branch}`, {
+      cwd: projectDir,
+      encoding: "utf-8",
+      stdio: "pipe",
+    }).trim();
+
+    let additions = 0;
+    let deletions = 0;
+    let filesChanged = 0;
+    const files = new Set<string>();
+
+    if (raw) {
+      for (const line of raw.split("\n")) {
+        const parts = line.split("\t");
+        if (parts.length >= 3) {
+          additions += parseInt(parts[0], 10) || 0;
+          deletions += parseInt(parts[1], 10) || 0;
+          files.add(parts[2]);
+          filesChanged++;
+        }
+      }
+    }
+
+    return { additions, deletions, filesChanged, files };
+  } catch {
+    return null; // Branch not found
+  }
+}
 
 // === Pre-flight types ===
 
@@ -24,7 +69,6 @@ export async function runPreFlight(
   const db = getDb(projectDir);
 
   const allSpawns = listSpawns(db);
-  // If specific handles provided, filter to those; otherwise use all
   const spawns = opts.agentHandles
     ? allSpawns.filter((s) => opts.agentHandles!.includes(s.agent_handle))
     : allSpawns;
@@ -52,41 +96,17 @@ export async function runPreFlight(
 
   for (const s of spawns) {
     if (!s.branch) continue;
-    try {
-      const numstat = execSync(`git diff --numstat main..${s.branch}`, {
-        cwd: projectDir,
-        encoding: "utf-8",
-        stdio: "pipe",
-      }).trim();
+    const stats = parseNumstat(projectDir, s.branch);
+    if (!stats) continue;
 
-      let filesChanged = 0;
-      let additions = 0;
-      let deletions = 0;
-      const files = new Set<string>();
-
-      if (numstat) {
-        for (const line of numstat.split("\n")) {
-          const parts = line.split("\t");
-          if (parts.length >= 3) {
-            additions += parseInt(parts[0], 10) || 0;
-            deletions += parseInt(parts[1], 10) || 0;
-            files.add(parts[2]);
-            filesChanged++;
-          }
-        }
-      }
-
-      filesByBranch.set(s.agent_handle, files);
-      branches.push({
-        agent_handle: s.agent_handle,
-        branch: s.branch,
-        filesChanged,
-        additions,
-        deletions,
-      });
-    } catch {
-      // Branch not found — skip
-    }
+    filesByBranch.set(s.agent_handle, stats.files);
+    branches.push({
+      agent_handle: s.agent_handle,
+      branch: s.branch,
+      filesChanged: stats.filesChanged,
+      additions: stats.additions,
+      deletions: stats.deletions,
+    });
   }
 
   // 4. Detect conflicts
@@ -128,6 +148,51 @@ TESTS: <test count, coverage areas, what scenarios are tested>
 
 This report will be shown to the CEO in the sprint finish view.
 `;
+
+// === Merge with test gates ===
+
+export interface MergeResult {
+  merged: string[];
+  failed: string | null;
+}
+
+/**
+ * Sequentially merge branches, running tests after each.
+ * Reverts on test failure. Returns list of successfully merged handles.
+ */
+export async function mergeWithTestGates(
+  mergeOrder: string[],
+  projectDir: string,
+  opts: { db: Database.Database; onFailure?: (handle: string) => void } = {} as any,
+): Promise<MergeResult> {
+  const { mergeAgent } = await import("./spawner.js");
+  const merged: string[] = [];
+
+  for (const handle of mergeOrder) {
+    console.log(`\nMerging ${handle}...`);
+    try {
+      const result = mergeAgent(opts.db, handle, projectDir);
+      console.log(`  Merged ${result.branch} (${result.mergedCommits} commits)`);
+    } catch (err: any) {
+      opts.onFailure?.(handle);
+      throw new Error(`Merge failed for ${handle}: ${err.message}`);
+    }
+
+    try {
+      execSync("npm test", { cwd: projectDir, stdio: "pipe", timeout: 120_000 });
+      console.log(`  Tests pass after merging ${handle}.`);
+      merged.push(handle);
+    } catch {
+      console.error(`  Tests FAILED after merging ${handle}. Reverting...`);
+      execSync("git reset --hard HEAD~1", { cwd: projectDir, stdio: "pipe" });
+      console.error(`  Reverted merge of ${handle}. Stopping.`);
+      opts.onFailure?.(handle);
+      throw new Error(`Tests failed after merging ${handle}`);
+    }
+  }
+
+  return { merged, failed: null };
+}
 
 // === Sprint helper: build report for a sprint ===
 
@@ -181,7 +246,6 @@ export async function buildSprintReport(
     // Try to find a structured report in recent posts
     let parsedReport = null;
     if (lastPost) {
-      // Search recent posts for REPORT: marker
       const recentPosts = db.prepare(
         "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 10"
       ).all(sa.agent_handle) as { content: string }[];
@@ -192,24 +256,10 @@ export async function buildSprintReport(
     }
 
     // Get diff stats
-    let additions = 0, deletions = 0, filesChanged = 0;
-    if (spawn?.branch) {
-      try {
-        const numstat = execSync(`git diff --numstat main..${spawn.branch}`, {
-          cwd: projectDir, encoding: "utf-8", stdio: "pipe",
-        }).trim();
-        if (numstat) {
-          for (const line of numstat.split("\n")) {
-            const parts = line.split("\t");
-            if (parts.length >= 3) {
-              additions += parseInt(parts[0], 10) || 0;
-              deletions += parseInt(parts[1], 10) || 0;
-              filesChanged++;
-            }
-          }
-        }
-      } catch { /* branch not found */ }
-    }
+    const stats = spawn?.branch ? parseNumstat(projectDir, spawn.branch) : null;
+    const additions = stats?.additions ?? 0;
+    const deletions = stats?.deletions ?? 0;
+    const filesChanged = stats?.filesChanged ?? 0;
 
     totalAdditions += additions;
     totalDeletions += deletions;
