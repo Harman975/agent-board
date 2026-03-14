@@ -87,14 +87,5 @@ export function listRoutesByTeam(
   teamName: string,
   opts?: { status?: RouteStatus }
 ): Route[] {
-  let sql = "SELECT * FROM routes WHERE team_name = ?";
-  const params: unknown[] = [teamName];
-
-  if (opts?.status) {
-    sql += " AND status = ?";
-    params.push(opts.status);
-  }
-
-  sql += " ORDER BY created_at ASC";
-  return db.prepare(sql).all(...params) as Route[];
+  return listRoutes(db, { team_name: teamName, status: opts?.status });
 }
