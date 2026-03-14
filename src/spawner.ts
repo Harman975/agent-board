@@ -265,19 +265,9 @@ rm work.bundle
 
 // === Ensure channels ===
 
-function ensureStatusChannel(db: Database.Database): void {
-  if (!getChannel(db, "#status")) {
-    createChannel(db, { name: "status", description: "Agent lifecycle status" });
-  }
-}
-
 function ensureWorkChannels(db: Database.Database): void {
-  ensureStatusChannel(db);
-  if (!getChannel(db, "#work")) {
-    createChannel(db, { name: "work", description: "Agent work updates" });
-  }
-  if (!getChannel(db, "#escalations")) {
-    createChannel(db, { name: "escalations", description: "Blocked agents needing attention" });
+  for (const [name, desc] of [["status", "Agent lifecycle status"], ["work", "Agent work updates"], ["escalations", "Blocked agents needing attention"]] as const) {
+    if (!getChannel(db, `#${name}`)) createChannel(db, { name, description: desc });
   }
 }
 
