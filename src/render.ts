@@ -7,7 +7,7 @@ import type { DagSummary, PromoteResult } from "./gitdag.js";
 
 const useColor = !process.env.NO_COLOR;
 
-const c = {
+export const c = {
   reset: useColor ? "\x1b[0m" : "",
   dim: useColor ? "\x1b[2m" : "",
   bold: useColor ? "\x1b[1m" : "",

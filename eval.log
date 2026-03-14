@@ -1,5 +1,5 @@
      297 src/sprint-orchestrator.ts
-     100 src/routes.ts
+      91 src/routes.ts
      399 src/gitdag.ts
      387 src/decomposer.ts
      155 src/bucket-engine.ts
@@ -20,4 +20,4 @@
      553 src/server.ts
      219 src/db.ts
       43 src/auth.ts
-    7612 total
+    7603 total

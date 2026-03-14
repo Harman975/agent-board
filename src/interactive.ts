@@ -6,6 +6,7 @@ import { initDb, dbExists, getDb } from "./db.js";
 import { normalizeHandle } from "./agents.js";
 import { generateKey, hashKey } from "./auth.js";
 import {
+  c,
   renderFeed,
   renderSpawnList,
   renderBriefing,
@@ -18,20 +19,6 @@ import {
 import type { RankedPost, Team, TeamMember, Route } from "./types.js";
 import type { BriefingSummary } from "./supervision.js";
 import type Database from "better-sqlite3";
-
-// === ANSI helpers ===
-
-const useColor = !process.env.NO_COLOR;
-const c = {
-  reset: useColor ? "\x1b[0m" : "",
-  dim: useColor ? "\x1b[2m" : "",
-  bold: useColor ? "\x1b[1m" : "",
-  green: useColor ? "\x1b[32m" : "",
-  cyan: useColor ? "\x1b[36m" : "",
-  yellow: useColor ? "\x1b[33m" : "",
-  gray: useColor ? "\x1b[90m" : "",
-  red: useColor ? "\x1b[31m" : "",
-};
 
 // === .boardrc ===
 
