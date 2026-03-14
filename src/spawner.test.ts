@@ -12,6 +12,7 @@ import {
   spawnAgent,
   killAgent,
   isProcessAlive,
+  installScopeHook,
   type Executor,
   type SpawnRecord,
 } from "./spawner.js";
@@ -592,5 +593,149 @@ describe("isProcessAlive", () => {
 
   it("returns false for non-existent PID", () => {
     assert.ok(!isProcessAlive(999999));
+  });
+});
+
+// === Scope enforcement ===
+
+describe("spawnAgent scope in CLAUDE.md", () => {
+  beforeEach(() => {
+    createAgent(db, { handle: "scoped", name: "Scoped", mission: "scoped work" });
+  });
+
+  it("generates CLAUDE.md with File Scope section when scope provided", () => {
+    const mock = createMockExecutor();
+    const result = spawnAgent(db, {
+      handle: "@scoped",
+      mission: "fix bugs",
+      apiKey: "key",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+      scope: ["src/foo.ts", "src/bar.ts"],
+    }, mock.executor);
+
+    const claudeMd = fs.readFileSync(path.join(result.worktreePath, "CLAUDE.md"), "utf-8");
+    assert.ok(claudeMd.includes("## File Scope"), "Should have File Scope section");
+    assert.ok(claudeMd.includes("- src/foo.ts"), "Should list src/foo.ts");
+    assert.ok(claudeMd.includes("- src/bar.ts"), "Should list src/bar.ts");
+  });
+
+  it("generates CLAUDE.md without File Scope section when no scope", () => {
+    const mock = createMockExecutor();
+    const result = spawnAgent(db, {
+      handle: "@scoped",
+      mission: "fix bugs",
+      apiKey: "key",
+      serverUrl: "http://localhost:3141",
+      projectDir: tmpDir,
+    }, mock.executor);
+
+    const claudeMd = fs.readFileSync(path.join(result.worktreePath, "CLAUDE.md"), "utf-8");
+    assert.ok(!claudeMd.includes("## File Scope"), "Should not have File Scope section");
+  });
+});
+
+describe("pre-commit scope hook", () => {
+  let repoDir: string;
+
+  beforeEach(() => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-hook-test-"));
+    execSync("git init", { cwd: repoDir, stdio: "pipe" });
+    execSync("git config user.email 'test@test.com'", { cwd: repoDir, stdio: "pipe" });
+    execSync("git config user.name 'Test'", { cwd: repoDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(repoDir, "README.md"), "init");
+    execSync("git add . && git commit -m 'init'", { cwd: repoDir, stdio: "pipe" });
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it("rejects commits when CLAUDE.md is missing", () => {
+    installScopeHook(repoDir);
+
+    // Make sure there's no CLAUDE.md
+    const claudePath = path.join(repoDir, "CLAUDE.md");
+    if (fs.existsSync(claudePath)) fs.unlinkSync(claudePath);
+
+    // Stage a file change
+    fs.writeFileSync(path.join(repoDir, "README.md"), "changed");
+    execSync("git add README.md", { cwd: repoDir, stdio: "pipe" });
+
+    assert.throws(
+      () => execSync("git commit -m 'test'", { cwd: repoDir, stdio: "pipe" }),
+      /CLAUDE\.md not found/
+    );
+  });
+
+  it("rejects out-of-scope commits", () => {
+    const claudeMd = `# Agent Instructions
+
+## File Scope
+
+You are only allowed to modify the following files:
+- src/allowed.ts
+
+## Other
+`;
+    fs.writeFileSync(path.join(repoDir, "CLAUDE.md"), claudeMd);
+    installScopeHook(repoDir);
+
+    // Stage an out-of-scope file
+    fs.writeFileSync(path.join(repoDir, "not-allowed.txt"), "bad");
+    execSync("git add not-allowed.txt", { cwd: repoDir, stdio: "pipe" });
+
+    assert.throws(
+      () => execSync("git commit -m 'test'", { cwd: repoDir, stdio: "pipe" }),
+      /outside of allowed scope/
+    );
+  });
+
+  it("allows in-scope commits", () => {
+    fs.mkdirSync(path.join(repoDir, "src"), { recursive: true });
+    const claudeMd = `# Agent Instructions
+
+## File Scope
+
+You are only allowed to modify the following files:
+- src/allowed.ts
+
+## Other
+`;
+    fs.writeFileSync(path.join(repoDir, "CLAUDE.md"), claudeMd);
+    installScopeHook(repoDir);
+
+    // Stage an in-scope file
+    fs.writeFileSync(path.join(repoDir, "src", "allowed.ts"), "ok");
+    execSync("git add src/allowed.ts", { cwd: repoDir, stdio: "pipe" });
+
+    // Should not throw
+    execSync("git commit -m 'in scope'", { cwd: repoDir, stdio: "pipe" });
+
+    // Verify commit happened
+    const log = execSync("git log --oneline -1", { cwd: repoDir, encoding: "utf-8" });
+    assert.ok(log.includes("in scope"));
+  });
+
+  it("allows all commits when no File Scope section exists", () => {
+    const claudeMd = `# Agent Instructions
+
+## Your Mission
+Do stuff
+
+## Other
+`;
+    fs.writeFileSync(path.join(repoDir, "CLAUDE.md"), claudeMd);
+    installScopeHook(repoDir);
+
+    // Stage any file
+    fs.writeFileSync(path.join(repoDir, "anything.txt"), "fine");
+    execSync("git add anything.txt", { cwd: repoDir, stdio: "pipe" });
+
+    // Should not throw — no scope = no restriction
+    execSync("git commit -m 'no scope'", { cwd: repoDir, stdio: "pipe" });
+
+    const log = execSync("git log --oneline -1", { cwd: repoDir, encoding: "utf-8" });
+    assert.ok(log.includes("no scope"));
   });
 });

@@ -103,6 +103,77 @@ function createWorktree(projectDir: string, handle: string): { worktreePath: str
   return { worktreePath, branch };
 }
 
+/**
+ * Install a pre-commit hook in a worktree that enforces file scope.
+ * Scope is read from the ## File Scope section of CLAUDE.md at commit time.
+ * - If CLAUDE.md is missing: reject (fail-closed)
+ * - If CLAUDE.md exists but has no File Scope section: allow all
+ * - If File Scope section exists: only allow listed files
+ */
+export function installScopeHook(worktreePath: string): void {
+  // Worktrees have .git as a file with "gitdir: <path>", not a directory
+  const dotGit = path.join(worktreePath, ".git");
+  let hooksDir: string;
+
+  if (fs.statSync(dotGit).isFile()) {
+    const content = fs.readFileSync(dotGit, "utf-8").trim();
+    const gitDir = content.replace(/^gitdir:\s*/, "");
+    const resolvedGitDir = path.isAbsolute(gitDir) ? gitDir : path.resolve(worktreePath, gitDir);
+    hooksDir = path.join(resolvedGitDir, "hooks");
+  } else {
+    hooksDir = path.join(dotGit, "hooks");
+  }
+
+  fs.mkdirSync(hooksDir, { recursive: true });
+
+  const hookScript = `#!/bin/bash
+# Scope enforcement hook — installed by AgentBoard
+set -e
+
+CLAUDE_MD="$(git rev-parse --show-toplevel)/CLAUDE.md"
+
+# Fail-closed: if CLAUDE.md is missing, reject
+if [ ! -f "$CLAUDE_MD" ]; then
+  echo "ERROR: CLAUDE.md not found — rejecting commit (fail-closed)" >&2
+  exit 1
+fi
+
+# Extract File Scope section
+SCOPE_SECTION=$(sed -n '/^## File Scope$/,/^## /{ /^## File Scope$/d; /^## /d; p; }' "$CLAUDE_MD")
+
+# If no File Scope section, allow all commits
+if [ -z "$SCOPE_SECTION" ]; then
+  exit 0
+fi
+
+# Parse allowed files from bullet list (lines starting with "- ")
+ALLOWED_FILES=$(echo "$SCOPE_SECTION" | grep '^- ' | sed 's/^- //')
+
+# Check each staged file
+STAGED=$(git diff --cached --name-only)
+for FILE in $STAGED; do
+  FOUND=0
+  for ALLOWED in $ALLOWED_FILES; do
+    if [ "$FILE" = "$ALLOWED" ]; then
+      FOUND=1
+      break
+    fi
+  done
+  if [ "$FOUND" = "0" ]; then
+    echo "ERROR: File '$FILE' is outside of allowed scope." >&2
+    echo "Allowed files:" >&2
+    echo "$ALLOWED_FILES" >&2
+    exit 1
+  fi
+done
+
+exit 0
+`;
+
+  const hookPath = path.join(hooksDir, "pre-commit");
+  fs.writeFileSync(hookPath, hookScript, { mode: 0o755 });
+}
+
 function removeWorktree(projectDir: string, worktreePath: string): void {
   try {
     execSync(`git worktree remove "${worktreePath}" --force`, { cwd: projectDir, stdio: "pipe" });
@@ -352,6 +423,9 @@ function _spawnProcess(
     scope: opts.scope,
   });
   fs.writeFileSync(path.join(worktreePath, "CLAUDE.md"), claudeMd);
+
+  // Install scope enforcement hook
+  installScopeHook(worktreePath);
 
   const foreground = opts.foreground ?? false;
   const logPath = foreground ? null : path.join(worktreePath, "agent.log");

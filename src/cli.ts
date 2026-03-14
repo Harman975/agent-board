@@ -1372,11 +1372,7 @@ sprint
           });
         }
 
-        // Build mission with scope if provided
         let mission = spec.mission;
-        if (spec.scope && spec.scope.length > 0) {
-          mission += `\n\nYour scope (files you own):\n${spec.scope.map((f) => `- ${f}`).join("\n")}`;
-        }
 
         // Load and inject identity with report protocol
         let identity = undefined;
@@ -1407,6 +1403,7 @@ sprint
           serverUrl: rc.url,
           projectDir,
           identity,
+          scope: spec.scope,
         });
 
         // Record in sprint_agents
