@@ -3,12 +3,6 @@ import path from "path";
 import { execSync } from "child_process";
 import { normalizeHandle } from "./agents.js";
 
-class CliError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CliError";
-  }
-}
 
 // === Types ===
 
@@ -262,7 +256,7 @@ export function parseDecompositionResponse(raw: string): DecompositionResult {
   if (!jsonStr.startsWith("{")) {
     const objStart = jsonStr.indexOf("{");
     if (objStart === -1) {
-      throw new CliError(
+      throw new Error(
         "Decomposition failed: response does not contain valid JSON. The model may have refused or returned an unexpected format."
       );
     }
@@ -273,7 +267,7 @@ export function parseDecompositionResponse(raw: string): DecompositionResult {
   try {
     parsed = JSON.parse(jsonStr);
   } catch {
-    throw new CliError(
+    throw new Error(
       "Decomposition failed: could not parse JSON from response."
     );
   }
@@ -282,31 +276,31 @@ export function parseDecompositionResponse(raw: string): DecompositionResult {
 
   // Validate required fields
   if (typeof obj.goal !== "string") {
-    throw new CliError('Decomposition failed: missing "goal" field in response.');
+    throw new Error('Decomposition failed: missing "goal" field in response.');
   }
 
   if (!Array.isArray(obj.tasks)) {
-    throw new CliError('Decomposition failed: missing "tasks" array in response.');
+    throw new Error('Decomposition failed: missing "tasks" array in response.');
   }
 
   if (obj.tasks.length === 0) {
-    throw new CliError("Decomposition failed: tasks array is empty.");
+    throw new Error("Decomposition failed: tasks array is empty.");
   }
 
   const tasks: DecompositionTask[] = [];
   for (const task of obj.tasks) {
     const t = task as Record<string, unknown>;
     if (typeof t.agent !== "string") {
-      throw new CliError('Decomposition failed: task missing "agent" field.');
+      throw new Error('Decomposition failed: task missing "agent" field.');
     }
     if (typeof t.handle !== "string") {
-      throw new CliError('Decomposition failed: task missing "handle" field.');
+      throw new Error('Decomposition failed: task missing "handle" field.');
     }
     if (typeof t.mission !== "string") {
-      throw new CliError('Decomposition failed: task missing "mission" field.');
+      throw new Error('Decomposition failed: task missing "mission" field.');
     }
     if (!Array.isArray(t.scope)) {
-      throw new CliError('Decomposition failed: task missing "scope" array.');
+      throw new Error('Decomposition failed: task missing "scope" array.');
     }
 
     tasks.push({
@@ -323,7 +317,7 @@ export function parseDecompositionResponse(raw: string): DecompositionResult {
     for (const file of task.scope) {
       const owner = seen.get(file);
       if (owner) {
-        throw new CliError(
+        throw new Error(
           `Decomposition failed: overlapping scope — file "${file}" is assigned to both "${owner}" and "${task.handle}".`
         );
       }
