@@ -1,0 +1,312 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --planning: #6e7681;
+  --in-progress: #388bfd;
+  --blocked: #f85149;
+  --review: #d29922;
+  --done: #3fb950;
+  --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial,
+    sans-serif;
+  line-height: 1.5;
+}
+
+/* Action Bar */
+.action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.action-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sprint-name {
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+
+.sprint-goal {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.sprint-elapsed {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.action-bar-center {
+  display: flex;
+  gap: 12px;
+  font-size: 0.85rem;
+}
+
+.bucket-count {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-family: var(--font-mono);
+}
+
+.bucket-count.planning {
+  color: var(--planning);
+}
+.bucket-count.in_progress {
+  color: var(--in-progress);
+}
+.bucket-count.blocked {
+  color: var(--blocked);
+}
+.bucket-count.review {
+  color: var(--review);
+}
+.bucket-count.done {
+  color: var(--done);
+}
+
+.action-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.connection-status {
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+}
+
+.connection-status.connected {
+  color: var(--done);
+}
+
+.connection-status.disconnected {
+  color: var(--review);
+}
+
+.merge-button {
+  background: var(--done);
+  color: var(--bg);
+  border: none;
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.merge-button:hover {
+  opacity: 0.9;
+}
+
+/* Kanban Board */
+.kanban-board {
+  display: flex;
+  gap: 12px;
+  padding: 16px;
+  overflow-x: auto;
+  min-height: calc(100vh - 60px);
+}
+
+/* Kanban Column */
+.kanban-column {
+  flex: 1;
+  min-width: 240px;
+  background: var(--surface);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.column-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.column-header h2 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.column-count {
+  background: var(--border);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-family: var(--font-mono);
+}
+
+.kanban-column.planning .column-header {
+  border-bottom-color: var(--planning);
+}
+.kanban-column.in_progress .column-header {
+  border-bottom-color: var(--in-progress);
+}
+.kanban-column.blocked .column-header {
+  border-bottom-color: var(--blocked);
+}
+.kanban-column.review .column-header {
+  border-bottom-color: var(--review);
+}
+.kanban-column.done .column-header {
+  border-bottom-color: var(--done);
+}
+
+.column-body {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+/* Agent Tile */
+.agent-tile {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+  outline: none;
+}
+
+.agent-tile:hover,
+.agent-tile:focus-visible {
+  border-color: var(--text-muted);
+  transform: translateY(-1px);
+}
+
+.agent-tile.planning {
+  border-left: 3px solid var(--planning);
+}
+.agent-tile.in_progress {
+  border-left: 3px solid var(--in-progress);
+}
+.agent-tile.blocked {
+  border-left: 3px solid var(--blocked);
+}
+.agent-tile.review {
+  border-left: 3px solid var(--review);
+}
+.agent-tile.done {
+  border-left: 3px solid var(--done);
+}
+
+.agent-tile.dead {
+  opacity: 0.6;
+}
+
+.tile-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.tile-handle {
+  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+
+.tile-status {
+  font-size: 0.7rem;
+}
+
+.agent-tile.alive .tile-status {
+  color: var(--done);
+}
+
+.agent-tile.dead .tile-status {
+  color: var(--text-muted);
+}
+
+.tile-mission {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.tile-meta {
+  display: flex;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.tile-diff {
+  display: flex;
+  gap: 6px;
+}
+
+.additions {
+  color: var(--done);
+}
+
+.deletions {
+  color: var(--blocked);
+}
+
+.files {
+  color: var(--text-muted);
+}
+
+.tile-details {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.tile-branch {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--in-progress);
+  margin-bottom: 6px;
+}
+
+.tile-last-post {
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  white-space: pre-wrap;
+}
+
+.tile-exit {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--blocked);
+}
