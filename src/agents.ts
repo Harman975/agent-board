@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import type { Agent, AgentRole, AgentRow, AgentStatus } from "./types.js";
 
-function safeJsonParse(json: string, fallback: Record<string, unknown> = {}): Record<string, unknown> {
+export function safeJsonParse(json: string, fallback: Record<string, unknown> = {}): Record<string, unknown> {
   try {
     return JSON.parse(json);
   } catch {

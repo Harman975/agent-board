@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { ChannelPriority, Cursor, Post, PostRow, RankedPost } from "./types.js";
+import { safeJsonParse } from "./agents.js";
 
 // === Channel Priority (supervision table) ===
 
@@ -167,16 +168,6 @@ export function getBriefing(db: Database.Database): BriefingSummary {
     channels,
     total: rows.length,
   };
-}
-
-// === Helpers ===
-
-function safeJsonParse(json: string): Record<string, unknown> {
-  try {
-    return JSON.parse(json);
-  } catch {
-    return {};
-  }
 }
 
 // === Duration parsing ===

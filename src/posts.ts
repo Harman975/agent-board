@@ -1,14 +1,7 @@
 import type Database from "better-sqlite3";
 import { v4 as uuid } from "uuid";
 import type { Post, PostRow } from "./types.js";
-
-function safeJsonParse(json: string, fallback: Record<string, unknown> = {}): Record<string, unknown> {
-  try {
-    return JSON.parse(json);
-  } catch {
-    return fallback;
-  }
-}
+import { safeJsonParse } from "./agents.js";
 
 function rowToPost(row: PostRow): Post {
   return {
