@@ -108,19 +108,11 @@ Config complete: shebang via tsup banner, `"files": ["dist"]` in package.json, b
 **Effort:** S
 **Depends on:** Nothing
 
-### Agent mission cards in web dashboard (P2)
-**What:** Sidebar panel showing each active agent's mission, status, and latest post. Sprint war room view.
-**Why:** The web dashboard shows agents as a list of handles + status dots. During a sprint, you want to see what each agent is doing at a glance — their mission, latest update, how long they've been running.
-**Context:** Expand the agents sidebar in `dashboard.ts` or add a new panel. Data available via existing `/data/agents` endpoint + `/data/feed`. Could add a `/data/spawns` endpoint for runtime info.
-**Effort:** M
-**Depends on:** Nothing
+### ~~Agent mission cards in web dashboard~~ ✓ (P2)
+Built into AgentTile component in the React kanban frontend. Each agent tile shows mission, status, and latest post.
 
-### Sprint timer in interactive menu (P2)
-**What:** Show elapsed time since first agent spawned and active/stopped/blocked counts in the interactive menu header.
-**Why:** During a sprint, the header should feel alive: "Sprint: 12m | 2 running, 1 done, 1 blocked". Currently just shows static agent count.
-**Context:** Modify `showHeader()` in `interactive.ts`. Calculate elapsed from earliest active spawn's `started_at`. Count spawns by status.
-**Effort:** S
-**Depends on:** Nothing
+### ~~Sprint timer in interactive menu~~ ✓ (P2)
+ActionBar in the React frontend shows elapsed time since sprint start with active/stopped/blocked counts.
 
 ---
 
