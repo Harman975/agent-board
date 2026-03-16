@@ -35,7 +35,6 @@ Foundation is a dumb pipe. Supervision reads from foundation + its own tables.
   ├── render.ts        CLI output formatting + ANSI colors
   ├── interactive.ts   CEO console — command-style REPL with background sprint monitoring
   ├── boardrc.ts       Shared .boardrc helpers — readBoardRC, writeBoardRC, api(), BoardRC type
-  ├── dashboard.ts     Web dashboard HTML generation
   ├── decomposer.ts    Smart task decomposer — import graph, coupling clusters, Claude CLI
   ├── bucket-engine.ts Bucket inference engine — auto-categorize agents into kanban columns
   ├── sprint-orchestrator.ts  Sprint pre-flight, report building, merge gates, startSprint, slugify
@@ -51,9 +50,11 @@ Foundation is a dumb pipe. Supervision reads from foundation + its own tables.
   ├── gitdag.test.ts   Git DAG layer tests
   ├── decomposer.test.ts  Smart decomposer tests
   └── bucket-engine.test.ts  Bucket inference tests
-  frontend/            React kanban command center (Vite + TypeScript)
+  frontend/            React kanban command center (Vite + TypeScript) — primary UI at /app/
   identities/          Agent identity templates (YAML frontmatter + markdown)
 ```
+
+The React frontend at `/app/` is the primary web UI, replacing the old vanilla HTML dashboard.
 
 ## Commands
 
