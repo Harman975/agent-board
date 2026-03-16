@@ -25,16 +25,60 @@ export interface SprintState {
   createdAt: string;
 }
 
+export interface FeedPost {
+  id: string;
+  author: string;
+  channel: string;
+  content: string;
+  created_at: string;
+  parent_id: string | null;
+}
+
+export interface SprintTask {
+  agent: string;
+  handle: string;
+  mission: string;
+  scope: string;
+}
+
+export interface SprintSuggestion {
+  goal: string;
+  tasks: SprintTask[];
+}
+
+export interface SprintStartResult {
+  sprintName: string;
+  agents: { handle: string; pid: number; branch: string }[];
+}
+
+export interface LandingBriefAgent {
+  handle: string;
+  status: 'passed' | 'failed' | 'running';
+  branch: string;
+  testsPassed: number;
+  testsFailed: number;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface LandingBriefData {
+  agents: LandingBriefAgent[];
+}
+
 export type WSEventType =
   | 'bucket_changed'
   | 'post_created'
   | 'spawn_stopped'
-  | 'initial_state';
+  | 'initial_state'
+  | 'log_line';
 
 export interface WSEvent {
   type: WSEventType;
   data: Record<string, unknown>;
 }
+
+export type TabId = 'kanban' | 'feed' | 'logs';
 
 export function applyWSEvent(
   state: SprintState | null,
@@ -87,6 +131,10 @@ export function applyWSEvent(
         ),
       };
     }
+
+    case 'log_line':
+      // Log lines are handled by the LogsPanel directly via WS subscription
+      return state;
 
     default:
       return state;
