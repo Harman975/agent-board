@@ -3,6 +3,7 @@ import { AgentTile as AgentTileType } from '../types';
 
 interface AgentTileProps {
   agent: AgentTileType;
+  sprintName?: string;
 }
 
 function timeAgo(dateStr: string | null): string {
@@ -15,10 +16,37 @@ function timeAgo(dateStr: string | null): string {
   return `${hours}h ago`;
 }
 
-export const AgentTile: React.FC<AgentTileProps> = ({ agent }) => {
+export const AgentTile: React.FC<AgentTileProps> = ({ agent, sprintName }) => {
   const [expanded, setExpanded] = useState(false);
+  const [steering, setSteering] = useState(false);
+  const [directive, setDirective] = useState('');
 
   const statusClass = agent.alive ? 'alive' : 'dead';
+
+  const handleKill = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!sprintName) return;
+    const handle = agent.handle.replace(/^@/, '');
+    try {
+      await fetch(`/data/sprint/${sprintName}/kill/${handle}`, { method: 'POST' });
+    } catch { /* best effort */ }
+  };
+
+  const handleSteer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!sprintName || !directive.trim()) return;
+    const handle = agent.handle.replace(/^@/, '');
+    try {
+      await fetch(`/data/sprint/${sprintName}/steer/${handle}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directive: directive.trim() }),
+      });
+      setDirective('');
+      setSteering(false);
+    } catch { /* best effort */ }
+  };
 
   return (
     <div
@@ -37,7 +65,7 @@ export const AgentTile: React.FC<AgentTileProps> = ({ agent }) => {
       <div className="tile-header">
         <span className="tile-handle">{agent.handle}</span>
         <span className="tile-status" aria-label={agent.alive ? 'alive' : 'stopped'}>
-          {agent.alive ? '\u25CF' : '\u25CB'}
+          {agent.alive ? '\u25CF' : '\u25CB'} {timeAgo(agent.lastPost)}
         </span>
       </div>
 
@@ -63,6 +91,32 @@ export const AgentTile: React.FC<AgentTileProps> = ({ agent }) => {
           )}
           {agent.exitCode !== null && (
             <p className="tile-exit">Exit code: {agent.exitCode}</p>
+          )}
+          {sprintName && (
+            <div className="tile-actions" onClick={(e) => e.stopPropagation()}>
+              {agent.alive && (
+                <>
+                  <button className="action-btn steer-btn" onClick={() => setSteering(!steering)}>
+                    Steer
+                  </button>
+                  <button className="action-btn kill-btn" onClick={handleKill}>
+                    Kill
+                  </button>
+                </>
+              )}
+              {steering && (
+                <form className="steer-form" onSubmit={handleSteer}>
+                  <input
+                    type="text"
+                    value={directive}
+                    onChange={(e) => setDirective(e.target.value)}
+                    placeholder="Enter directive..."
+                    autoFocus
+                  />
+                  <button type="submit" className="action-btn send-btn">Send</button>
+                </form>
+              )}
+            </div>
           )}
         </div>
       )}

@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
+import { generateKey, hashKey } from "./auth.js";
+import { initDag } from "./gitdag.js";
 
 // === Foundation schema — AgentHub-compatible, zero supervision concepts ===
 
@@ -192,6 +194,35 @@ export function initDb(dir?: string): Database.Database {
 export function dbExists(dir?: string): boolean {
   const dbPath = path.join(dir ?? process.cwd(), DB_FILE);
   return fs.existsSync(dbPath);
+}
+
+/**
+ * Initialize a complete board: DB schema, @admin agent, #general channel,
+ * admin API key, and DAG bare repo. Returns the raw admin key.
+ * Used by both `board init` (cli.ts) and `ensureReady()` (interactive.ts).
+ */
+export function initBoard(dir?: string): { adminKey: string } {
+  const projectDir = dir ?? process.cwd();
+  const db = initDb(projectDir);
+
+  db.prepare(
+    "INSERT INTO agents (handle, name, mission) VALUES (?, ?, ?)"
+  ).run("@admin", "Admin", "Board administrator");
+
+  db.prepare(
+    "INSERT INTO channels (name, description) VALUES (?, ?)"
+  ).run("#general", "General discussion");
+
+  const rawKey = generateKey();
+  db.prepare(
+    "INSERT INTO api_keys (key_hash, agent_handle) VALUES (?, ?)"
+  ).run(hashKey(rawKey), null);
+
+  db.close();
+
+  initDag(projectDir);
+
+  return { adminKey: rawKey };
 }
 
 /**

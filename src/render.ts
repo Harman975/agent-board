@@ -1,4 +1,4 @@
-import type { Agent, DagCommit, Post, RankedPost, Team, TeamMember, Route, Sprint, SprintReport, SprintAgentReport, Alert } from "./types.js";
+import type { Agent, DagCommit, Post, RankedPost, Team, TeamMember, Route, Sprint, SprintReport, SprintAgentReport, Alert, AgentBrief, LandingBrief } from "./types.js";
 import type { PostThread } from "./posts.js";
 import type { BriefingSummary } from "./supervision.js";
 import type { DagSummary, PromoteResult } from "./gitdag.js";
@@ -616,4 +616,114 @@ export function parseAgentReport(content: string): { summary: string; architectu
     edgeCases: extractSection("EDGE CASES"),
     tests: extractSection("TESTS"),
   };
+}
+
+// === Landing Brief rendering ===
+
+function agentStatusIcon(status: "passed" | "crashed" | "running"): string {
+  if (status === "passed") return `${c.green}✓${c.reset}`;
+  if (status === "crashed") return `${c.red}✗${c.reset}`;
+  return `${c.yellow}○${c.reset}`;
+}
+
+function truncate(str: string, len: number): string {
+  if (str.length <= len) return str;
+  return str.slice(0, len - 3) + "...";
+}
+
+function landingStatusLabel(brief: LandingBrief): string {
+  if (brief.summary.running > 0) return `${c.yellow}IN PROGRESS${c.reset}`;
+  if (brief.summary.crashed > 0 && brief.summary.passed === 0) return `${c.red}ALL CRASHED${c.reset}`;
+  if (brief.summary.crashed > 0) return `${c.yellow}PARTIAL${c.reset}`;
+  return `${c.green}READY TO LAND${c.reset}`;
+}
+
+function formatClockTime(iso: string): string {
+  const d = new Date(iso.endsWith("Z") ? iso : iso + "Z");
+  const h = d.getHours();
+  const m = String(d.getMinutes()).padStart(2, "0");
+  const ampm = h >= 12 ? "pm" : "am";
+  return `${h % 12 || 12}:${m}${ampm}`;
+}
+
+export function renderLandingBrief(brief: LandingBrief): string {
+  const lines: string[] = [];
+
+  const statusLabel = landingStatusLabel(brief);
+  const startTime = formatClockTime(brief.sprint.created_at);
+  const endTime = brief.sprint.finished_at ? formatClockTime(brief.sprint.finished_at) : "now";
+  const duration = formatDuration(brief.sprint.created_at, brief.sprint.finished_at);
+
+  lines.push(`  Sprint "${brief.sprint.name}" — ${statusLabel}`);
+  lines.push(`  Started ${startTime} · Done ${endTime} · ${duration}`);
+  lines.push("");
+
+  for (const agent of brief.agents) {
+    const icon = agentStatusIcon(agent.status);
+    const handle = agent.handle.padEnd(10);
+
+    let summaryText = "";
+    if (agent.status === "crashed") {
+      const lastContent = agent.lastPosts[0]?.content ?? "Unknown error";
+      summaryText = `Crashed: ${truncate(lastContent, 40)}`;
+    } else if (agent.report) {
+      summaryText = truncate(agent.report.summary, 50);
+    } else if (agent.lastPosts.length > 0) {
+      summaryText = truncate(agent.lastPosts[0].content, 50);
+    } else if (agent.mission) {
+      summaryText = truncate(agent.mission, 50);
+    }
+
+    const testPart = agent.testCount !== null ? ` ${agent.testCount} tests.` : "";
+    const runtimePart = agent.runtime ? ` ${agent.runtime}` : "";
+
+    lines.push(`  ${handle} ${icon}  ${summaryText}.${testPart}${runtimePart}`);
+  }
+
+  lines.push("");
+
+  const testsPart = brief.summary.totalTests > 0 ? ` · ${brief.summary.totalTests} tests added` : "";
+  const conflictsPart = ` · ${brief.conflicts.length} conflicts`;
+  lines.push(`  ${brief.summary.passed}/${brief.agents.length} passed${testsPart}${conflictsPart}`);
+
+  return lines.join("\n");
+}
+
+export function renderAgentInspect(agent: AgentBrief): string {
+  const lines: string[] = [];
+
+  lines.push(`  ${agent.handle} — inspect`);
+  lines.push("");
+
+  if (agent.mission) {
+    lines.push(`  Mission: ${agent.mission}`);
+    lines.push("");
+  }
+
+  if (agent.report) {
+    lines.push(`  ${c.bold}REPORT:${c.reset} ${agent.report.summary}`);
+    if (agent.report.architecture) lines.push(`  ${c.bold}ARCHITECTURE:${c.reset} ${agent.report.architecture}`);
+    if (agent.report.dataFlow) lines.push(`  ${c.bold}DATA FLOW:${c.reset} ${agent.report.dataFlow}`);
+    if (agent.report.edgeCases) lines.push(`  ${c.bold}EDGE CASES:${c.reset} ${agent.report.edgeCases}`);
+    if (agent.report.tests) lines.push(`  ${c.bold}TESTS:${c.reset} ${agent.report.tests}`);
+  } else {
+    lines.push(`  No completion report posted.`);
+    if (agent.exitCode !== null) lines.push(`  Exit code: ${agent.exitCode}`);
+    if (agent.runtime) lines.push(`  Runtime: ${agent.runtime}`);
+  }
+
+  lines.push("");
+
+  if (agent.lastPosts.length > 0) {
+    lines.push(`  Recent posts:`);
+    for (const p of [...agent.lastPosts].reverse()) {
+      const time = formatClockTime(p.created_at);
+      lines.push(`  ${time}  ${truncate(p.content, 60)}`);
+    }
+  }
+
+  lines.push("");
+  lines.push(`  ${c.bold}[m]${c.reset} merge  ${c.bold}[b]${c.reset} back  ${c.bold}[d]${c.reset} diff (advanced)`);
+
+  return lines.join("\n");
 }

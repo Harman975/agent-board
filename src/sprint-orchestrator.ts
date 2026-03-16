@@ -1,6 +1,8 @@
 import { execSync } from "child_process";
+import fs from "fs";
+import path from "path";
 import type Database from "better-sqlite3";
-import type { Sprint, SprintAgent, SprintReport, SprintAgentReport, SprintBranch } from "./types.js";
+import type { Sprint, SprintAgent, SprintReport, SprintAgentReport, SprintBranch, AgentBrief, LandingBrief } from "./types.js";
 import { parseAgentReport } from "./render.js";
 
 // === Shared git diff parsing ===
@@ -149,6 +151,122 @@ TESTS: <test count, coverage areas, what scenarios are tested>
 This report will be shown to the CEO in the sprint finish view.
 `;
 
+// === Runtime formatting ===
+
+function formatRuntime(startIso: string, endIso?: string | null): string {
+  const start = new Date(startIso.endsWith("Z") ? startIso : startIso + "Z");
+  const end = endIso ? new Date(endIso.endsWith("Z") ? endIso : endIso + "Z") : new Date();
+  const diffMs = end.getTime() - start.getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
+}
+
+function countTests(testsStr: string | null): number | null {
+  if (!testsStr) return null;
+  const numbers = testsStr.match(/\d+/g);
+  if (!numbers || numbers.length === 0) return null;
+  return parseInt(numbers[0], 10);
+}
+
+// === Build landing brief ===
+
+export async function buildLandingBrief(
+  sprintName: string,
+  projectDir: string,
+): Promise<LandingBrief> {
+  const { getDb } = await import("./db.js");
+  const { listSpawns, isProcessAlive, markSpawnStopped } = await import("./spawner.js");
+  const db = getDb(projectDir);
+
+  const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as Sprint | undefined;
+  if (!sprint) {
+    db.close();
+    throw new Error(`Sprint not found: ${sprintName}`);
+  }
+
+  const sprintAgents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(sprintName) as SprintAgent[];
+  const spawns = listSpawns(db);
+
+  const agents: AgentBrief[] = [];
+  let totalTests = 0;
+
+  for (const sa of sprintAgents) {
+    const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
+    const alive = spawn && !spawn.stopped_at ? isProcessAlive(spawn.pid) : false;
+
+    // Auto-mark dead agents as stopped
+    if (spawn && !spawn.stopped_at && !alive) {
+      markSpawnStopped(db, sa.agent_handle);
+    }
+
+    // Determine status
+    let status: "passed" | "crashed" | "running";
+    if (alive) {
+      status = "running";
+    } else if (spawn?.exit_code === 0) {
+      status = "passed";
+    } else {
+      status = "crashed";
+    }
+
+    // Get last 3 posts
+    const lastPosts = db.prepare(
+      "SELECT content, created_at FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 3"
+    ).all(sa.agent_handle) as { content: string; created_at: string }[];
+
+    // Parse report from last 10 posts
+    let report = null;
+    const recentPosts = db.prepare(
+      "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 10"
+    ).all(sa.agent_handle) as { content: string }[];
+    for (const p of recentPosts) {
+      report = parseAgentReport(p.content);
+      if (report) break;
+    }
+
+    const runtime = spawn?.started_at
+      ? formatRuntime(spawn.started_at, spawn.stopped_at)
+      : null;
+
+    const testCount = countTests(report?.tests ?? null);
+    if (testCount !== null) totalTests += testCount;
+
+    agents.push({
+      handle: sa.agent_handle,
+      status,
+      report,
+      lastPosts,
+      exitCode: spawn?.exit_code ?? null,
+      runtime,
+      branch: spawn?.branch ?? null,
+      testCount,
+      mission: sa.mission,
+    });
+  }
+
+  db.close();
+
+  // Run pre-flight for conflict detection and test status
+  const handles = sprintAgents.map((sa) => sa.agent_handle);
+  const pf = await runPreFlight(projectDir, { skipTests: false, agentHandles: handles });
+
+  return {
+    sprint,
+    agents,
+    summary: {
+      passed: agents.filter((a) => a.status === "passed").length,
+      crashed: agents.filter((a) => a.status === "crashed").length,
+      running: agents.filter((a) => a.status === "running").length,
+      totalTests,
+    },
+    conflicts: pf.conflicts,
+    testsPassOnMain: pf.testsPass,
+  };
+}
+
 // === Merge with test gates ===
 
 export interface MergeResult {
@@ -294,4 +412,170 @@ export async function buildSprintReport(
     escalations: escalationCount,
     mergeOrder: pf.mergeOrder,
   };
+}
+
+// === Sprint name slugification ===
+
+export function slugify(goal: string): string {
+  return goal
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 40);
+}
+
+/**
+ * Generate a unique sprint name from a goal string.
+ * Appends -2, -3, etc. on collision.
+ */
+export function uniqueSprintName(goal: string, db: Database.Database): string {
+  const base = slugify(goal);
+  if (!base) return `sprint-${Date.now()}`;
+
+  const exists = (name: string) =>
+    !!db.prepare("SELECT name FROM sprints WHERE name = ?").get(name);
+
+  if (!exists(base)) return base;
+  for (let i = 2; i <= 99; i++) {
+    const candidate = `${base}-${i}`;
+    if (!exists(candidate)) return candidate;
+  }
+  throw new Error(`Could not generate unique sprint name for "${goal}" (99 collisions)`);
+}
+
+// === Shared sprint start logic ===
+
+export interface AgentSpec {
+  handle: string;
+  identity?: string;
+  mission: string;
+  scope?: string[];
+}
+
+export interface StartSprintResult {
+  name: string;
+  spawned: string[];
+}
+
+/**
+ * Validate disjoint scopes across agent specs.
+ * Throws on overlap.
+ */
+export function validateDisjointScopes(specs: AgentSpec[]): void {
+  const fileOwners = new Map<string, string>();
+  const overlaps: string[] = [];
+  for (const spec of specs) {
+    for (const file of spec.scope ?? []) {
+      const existingOwner = fileOwners.get(file);
+      if (existingOwner) {
+        overlaps.push(`${file} claimed by both ${existingOwner} and ${spec.handle}`);
+      } else {
+        fileOwners.set(file, spec.handle);
+      }
+    }
+  }
+  if (overlaps.length > 0) {
+    throw new Error(`Scope overlap detected:\n${overlaps.map((o) => `  - ${o}`).join("\n")}`);
+  }
+}
+
+/**
+ * Start a sprint: create sprint record, spawn all agents with identities,
+ * atomic rollback on failure.
+ *
+ * Used by both `board sprint start` (cli.ts) and the CEO console (interactive.ts).
+ */
+export async function startSprint(opts: {
+  name: string;
+  goal: string;
+  specs: AgentSpec[];
+  projectDir: string;
+  serverUrl: string;
+  db: Database.Database;
+  onSpawn?: (handle: string, pid: number, branch: string) => void;
+}): Promise<StartSprintResult> {
+  const { spawnAgent, killAgent } = await import("./spawner.js");
+  const { createAgent, getAgent } = await import("./agents.js");
+  const { normalizeHandle } = await import("./agents.js");
+  const { generateKey, storeKey } = await import("./auth.js");
+  const { loadIdentity } = await import("./identities.js");
+
+  // Validate scopes
+  validateDisjointScopes(opts.specs);
+
+  // Check sprint name doesn't already exist
+  const existing = opts.db.prepare("SELECT name FROM sprints WHERE name = ?").get(opts.name);
+  if (existing) {
+    throw new Error(`Sprint "${opts.name}" already exists. Choose a different name.`);
+  }
+
+  // Create sprint record
+  opts.db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run(opts.name, opts.goal);
+
+  // Spawn agents atomically
+  const spawned: string[] = [];
+
+  for (const spec of opts.specs) {
+    const handle = normalizeHandle(spec.handle);
+
+    try {
+      if (!getAgent(opts.db, handle)) {
+        createAgent(opts.db, {
+          handle: handle.slice(1),
+          name: handle.slice(1),
+          role: "worker",
+          mission: spec.mission,
+        });
+      }
+
+      let mission = spec.mission;
+      let identity = undefined;
+
+      if (spec.identity) {
+        try {
+          identity = loadIdentity(spec.identity, opts.projectDir);
+          identity = { ...identity, content: identity.content + SPRINT_REPORT_PROTOCOL };
+        } catch {
+          const identityPath = path.join(opts.projectDir, "identities", `${spec.identity}.md`);
+          if (fs.existsSync(identityPath)) {
+            const identityContent = fs.readFileSync(identityPath, "utf-8");
+            mission = `[Identity: ${spec.identity}]\n${identityContent}\n\n${mission}`;
+          } else {
+            throw new Error(`Identity not found: ${spec.identity}`);
+          }
+        }
+      }
+
+      const apiKey = generateKey();
+      storeKey(opts.db, apiKey, handle);
+
+      const result = spawnAgent(opts.db, {
+        handle,
+        mission,
+        apiKey,
+        serverUrl: opts.serverUrl,
+        projectDir: opts.projectDir,
+        identity,
+        scope: spec.scope,
+      });
+
+      opts.db.prepare(
+        "INSERT INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)"
+      ).run(opts.name, handle, spec.identity || null, spec.mission);
+
+      spawned.push(handle);
+      opts.onSpawn?.(handle, result.pid, result.branch);
+    } catch (err: any) {
+      // Atomic rollback
+      for (const h of spawned) {
+        try { killAgent(opts.db, h, opts.projectDir); } catch { /* best effort */ }
+      }
+      opts.db.prepare(
+        "UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?"
+      ).run(opts.name);
+      throw new Error(`Failed to spawn ${handle}: ${err.message}`);
+    }
+  }
+
+  return { name: opts.name, spawned };
 }

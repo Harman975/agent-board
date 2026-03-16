@@ -15,10 +15,10 @@ export const App: React.FC = () => {
 
   const fetchState = useCallback(async () => {
     try {
-      const res = await fetch('/api/feed');
+      const res = await fetch('/data/sprint/latest');
       if (res.ok) {
-        const data: SprintState = await res.json();
-        setSprint(data);
+        const data = await res.json();
+        if (data) setSprint(data);
       }
     } catch {
       // polling failed, will retry
@@ -26,6 +26,9 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    // Fetch initial state via REST (WebSocket will also send initial_state)
+    fetchState();
+
     const wsUrl =
       (window.location.protocol === 'https:' ? 'wss://' : 'ws://') +
       window.location.host +
@@ -66,7 +69,7 @@ export const App: React.FC = () => {
     <div className="app">
       <ActionBar sprint={sprint} connected={connected} />
       <main>
-        <KanbanBoard agents={sprint?.agents ?? []} />
+        <KanbanBoard agents={sprint?.agents ?? []} sprintName={sprint?.name} />
       </main>
     </div>
   );

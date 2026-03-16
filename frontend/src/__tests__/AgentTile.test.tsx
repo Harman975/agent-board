@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { AgentTile } from '../components/AgentTile';
 import { AgentTile as AgentTileType } from '../types';
@@ -49,5 +49,66 @@ describe('AgentTile', () => {
     render(<AgentTile agent={deadAgent} />);
     fireEvent.click(screen.getByRole('button'));
     expect(screen.getByText('Exit code: 1')).toBeInTheDocument();
+  });
+
+  it('shows kill and steer buttons when expanded with sprintName', () => {
+    render(<AgentTile agent={agent} sprintName="test-sprint" />);
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.getByText('Kill')).toBeInTheDocument();
+    expect(screen.getByText('Steer')).toBeInTheDocument();
+  });
+
+  it('does not show action buttons without sprintName', () => {
+    render(<AgentTile agent={agent} />);
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.queryByText('Kill')).not.toBeInTheDocument();
+    expect(screen.queryByText('Steer')).not.toBeInTheDocument();
+  });
+
+  it('does not show action buttons for dead agents', () => {
+    const deadAgent: AgentTileType = { ...agent, alive: false, exitCode: 0 };
+    render(<AgentTile agent={deadAgent} sprintName="test-sprint" />);
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.queryByText('Kill')).not.toBeInTheDocument();
+    expect(screen.queryByText('Steer')).not.toBeInTheDocument();
+  });
+
+  it('shows steer form when steer button clicked', () => {
+    render(<AgentTile agent={agent} sprintName="test-sprint" />);
+    fireEvent.click(screen.getByRole('button')); // expand
+    fireEvent.click(screen.getByText('Steer'));
+    expect(screen.getByPlaceholderText('Enter directive...')).toBeInTheDocument();
+    expect(screen.getByText('Send')).toBeInTheDocument();
+  });
+
+  it('calls kill endpoint when kill button clicked', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
+    render(<AgentTile agent={agent} sprintName="test-sprint" />);
+    fireEvent.click(screen.getByRole('button')); // expand
+    fireEvent.click(screen.getByText('Kill'));
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/data/sprint/test-sprint/kill/frontend',
+      { method: 'POST' }
+    );
+    fetchSpy.mockRestore();
+  });
+
+  it('calls steer endpoint when directive submitted', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
+    render(<AgentTile agent={agent} sprintName="test-sprint" />);
+    fireEvent.click(screen.getByRole('button')); // expand
+    fireEvent.click(screen.getByText('Steer'));
+    fireEvent.change(screen.getByPlaceholderText('Enter directive...'), {
+      target: { value: 'Focus on tests' },
+    });
+    fireEvent.submit(screen.getByText('Send').closest('form')!);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/data/sprint/test-sprint/steer/frontend',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ directive: 'Focus on tests' }),
+      })
+    );
+    fetchSpy.mockRestore();
   });
 });

@@ -935,3 +935,171 @@ describe("GET /api/feed edge cases", () => {
     assert.equal(data.length, 2);
   });
 });
+
+// === Sprint data endpoints ===
+
+describe("GET /data/sprint/latest", () => {
+  it("returns null when no running sprint", async () => {
+    const res = await app.request("/data/sprint/latest");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data, null);
+  });
+
+  it("returns sprint state with agents when sprint is running", async () => {
+    // Create sprint
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("test-sprint", "Build features");
+
+    // Create agent and sprint_agent
+    db.prepare("INSERT INTO agents (handle, name, mission) VALUES (?, ?, ?)").run(
+      "@builder", "Builder", "Build stuff"
+    );
+    db.prepare(
+      "INSERT INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)"
+    ).run("test-sprint", "@builder", "researcher", "Build the feature");
+
+    // Insert a spawn record so bucket inference has data
+    db.prepare(
+      "INSERT INTO spawns (agent_handle, pid, log_path, worktree_path, branch, started_at) VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))"
+    ).run("@builder", 99999, "/tmp/log", "/tmp/wt", "agent/builder");
+
+    const res = await app.request("/data/sprint/latest");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(data);
+    assert.equal(data.name, "test-sprint");
+    assert.equal(data.goal, "Build features");
+    assert.ok(Array.isArray(data.agents));
+    assert.equal(data.agents.length, 1);
+    assert.equal(data.agents[0].handle, "@builder");
+    assert.ok(data.agents[0].bucket); // has a bucket state
+    assert.ok(data.createdAt); // has timestamp
+  });
+
+  it("ignores finished sprints", async () => {
+    db.prepare("INSERT INTO sprints (name, goal, status) VALUES (?, ?, ?)").run(
+      "done-sprint", "Old goal", "finished"
+    );
+    const res = await app.request("/data/sprint/latest");
+    const data = await res.json();
+    assert.equal(data, null);
+  });
+});
+
+describe("GET /data/sprint/:name", () => {
+  it("returns 404 for unknown sprint", async () => {
+    const res = await app.request("/data/sprint/nonexistent");
+    assert.equal(res.status, 404);
+  });
+
+  it("returns sprint by name", async () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("named-sprint", "Named goal");
+    const res = await app.request("/data/sprint/named-sprint");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.name, "named-sprint");
+    assert.equal(data.goal, "Named goal");
+  });
+});
+
+describe("GET /data/sprint/:name/buckets", () => {
+  it("returns empty object for sprint with no agents", async () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("empty-sprint", "Goal");
+    const res = await app.request("/data/sprint/empty-sprint/buckets");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.deepEqual(data, {});
+  });
+});
+
+describe("POST /data/sprint/:name/steer/:handle", () => {
+  it("writes directive to agent CLAUDE.md", async () => {
+    const handle = "@steer-agent";
+    // Create worktree structure with CLAUDE.md
+    const worktreePath = path.join(tmpDir, ".worktrees", handle);
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.writeFileSync(
+      path.join(worktreePath, "CLAUDE.md"),
+      "# Agent\n\n## Active Directives\n\nNo active directives.\n"
+    );
+
+    // Use tmpDir as projectDir
+    const testApp = createApp(db, tmpDir);
+    const res = await testApp.request(`/data/sprint/test/steer/steer-agent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ directive: "Focus on tests" }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.ok, true);
+
+    // Verify directive was written
+    const content = fs.readFileSync(path.join(worktreePath, "CLAUDE.md"), "utf-8");
+    assert.ok(content.includes("Focus on tests"));
+  });
+
+  it("returns 400 when directive is missing", async () => {
+    const testApp = createApp(db, tmpDir);
+    const res = await testApp.request("/data/sprint/test/steer/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+  });
+});
+
+describe("POST /data/sprint/:name/kill/:handle", () => {
+  it("returns 400 when no spawn record exists", async () => {
+    const testApp = createApp(db, tmpDir);
+    const res = await testApp.request("/data/sprint/test/kill/nonexistent", {
+      method: "POST",
+    });
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.ok(data.error.includes("No spawn record"));
+  });
+});
+
+describe("POST /data/sprint/:name/merge", () => {
+  it("returns empty results when no agents in review state", async () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("merge-test", "Goal");
+    const testApp = createApp(db, tmpDir);
+    const res = await testApp.request("/data/sprint/merge-test/merge", {
+      method: "POST",
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.deepEqual(data.results, []);
+  });
+});
+
+describe("GET /data/spawns", () => {
+  it("returns spawn records", async () => {
+    const res = await app.request("/data/spawns");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(Array.isArray(data));
+  });
+});
+
+describe("static frontend serving", () => {
+  it("returns 404 when frontend not built", async () => {
+    const testApp = createApp(db, tmpDir);
+    const res = await testApp.request("/app/");
+    assert.equal(res.status, 404);
+  });
+
+  it("serves index.html from frontend/dist", async () => {
+    const distDir = path.join(tmpDir, "frontend", "dist");
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, "index.html"), "<html>kanban</html>");
+
+    const testApp = createApp(db, tmpDir);
+    const res = await testApp.request("/app/");
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("kanban"));
+  });
+});

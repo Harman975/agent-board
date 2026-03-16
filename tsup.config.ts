@@ -17,4 +17,13 @@ export default defineConfig([
     dts: true,
     sourcemap: true,
   },
+  {
+    entry: ["src/mcp.ts"],
+    format: ["esm"],
+    dts: true,
+    sourcemap: true,
+    banner: {
+      js: "#!/usr/bin/env node",
+    },
+  },
 ]);

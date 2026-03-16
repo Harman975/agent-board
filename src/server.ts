@@ -12,6 +12,9 @@ import { createTeam, getTeam, listTeams, addMember, removeMember, updateTeam } f
 import { createRoute, listRoutes, updateRoute } from "./routes.js";
 import type { ApiKey } from "./types.js";
 import { dashboardHtml } from "./dashboard.js";
+import { BoardEventEmitter, inferAllBuckets, inferBucket } from "./bucket-engine.js";
+import { listSpawns, isProcessAlive, killAgent, mergeAgent, writeDirective } from "./spawner.js";
+import type { Sprint, SprintAgent } from "./types.js";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -21,7 +24,7 @@ type Variables = {
   apiKey: ApiKey;
 };
 
-export function createApp(db: Database.Database, projectDir?: string): Hono<{ Variables: Variables }> {
+export function createApp(db: Database.Database, projectDir?: string, emitter?: BoardEventEmitter): Hono<{ Variables: Variables }> {
   const app = new Hono<{ Variables: Variables }>();
   const resolvedProjectDir = projectDir ?? process.cwd();
 
@@ -199,6 +202,9 @@ export function createApp(db: Database.Database, projectDir?: string): Hono<{ Va
         parent_id: body.parent_id,
         metadata: body.metadata,
       });
+      if (emitter) {
+        emitter.emit("post_created", { author, channel: body.channel, content: body.content });
+      }
       return c.json(post, 201);
     } catch (e: any) {
       return c.json({ error: e.message }, 400);
@@ -548,6 +554,169 @@ export function createApp(db: Database.Database, projectDir?: string): Hono<{ Va
     const summary = getDagSummary(db, c.req.query("since") || undefined);
     return c.json(summary);
   });
+
+  // === Sprint data (kanban frontend) ===
+
+  // Get latest sprint state (or by name)
+  app.get("/data/sprint/latest", (c) => {
+    const row = db.prepare(
+      "SELECT * FROM sprints WHERE status = 'running' ORDER BY created_at DESC LIMIT 1"
+    ).get() as Sprint | undefined;
+    if (!row) {
+      return c.json(null);
+    }
+    return c.json(buildSprintState(row));
+  });
+
+  app.get("/data/sprint/:name{[^/]+}", (c) => {
+    const name = c.req.param("name");
+    if (name === "latest") return c.json(null); // handled by the route above
+    const row = db.prepare("SELECT * FROM sprints WHERE name = ?").get(name) as Sprint | undefined;
+    if (!row) return c.json({ error: "Sprint not found" }, 404);
+    return c.json(buildSprintState(row));
+  });
+
+  app.get("/data/sprint/:name/buckets", (c) => {
+    const sprintName = c.req.param("name");
+    const buckets = inferAllBuckets({ db, sprintName });
+    const result: Record<string, string> = {};
+    for (const [handle, bucket] of buckets) {
+      result[handle] = bucket;
+    }
+    return c.json(result);
+  });
+
+  // Actions: kill, steer, merge
+  app.post("/data/sprint/:name/kill/:handle", (c) => {
+    const handle = c.req.param("handle").startsWith("@") ? c.req.param("handle") : `@${c.req.param("handle")}`;
+    try {
+      killAgent(db, handle, resolvedProjectDir);
+      if (emitter) {
+        emitter.emit("spawn_stopped", { agent_handle: handle, exit_code: null });
+      }
+      return c.json({ ok: true });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400);
+    }
+  });
+
+  app.post("/data/sprint/:name/steer/:handle", async (c) => {
+    const handle = c.req.param("handle").startsWith("@") ? c.req.param("handle") : `@${c.req.param("handle")}`;
+    const body = await c.req.json();
+    if (!body.directive) {
+      return c.json({ error: "directive is required" }, 400);
+    }
+    try {
+      writeDirective(resolvedProjectDir, handle, body.directive);
+      return c.json({ ok: true });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400);
+    }
+  });
+
+  app.post("/data/sprint/:name/merge", async (c) => {
+    const sprintName = c.req.param("name");
+    const agents = db
+      .prepare("SELECT agent_handle FROM sprint_agents WHERE sprint_name = ?")
+      .all(sprintName) as { agent_handle: string }[];
+
+    const results: { handle: string; success: boolean; error?: string }[] = [];
+    for (const { agent_handle } of agents) {
+      const bucket = inferBucket({ db, agentHandle: agent_handle });
+      if (bucket !== "review" && bucket !== "done") continue;
+      if (bucket === "done") continue; // already merged
+      try {
+        mergeAgent(db, agent_handle, resolvedProjectDir, { cleanup: true });
+        results.push({ handle: agent_handle, success: true });
+      } catch (e: any) {
+        results.push({ handle: agent_handle, success: false, error: e.message });
+      }
+    }
+
+    // Mark sprint finished if all done
+    const remaining = inferAllBuckets({ db, sprintName });
+    const allDone = [...remaining.values()].every((b) => b === "done");
+    if (allDone) {
+      db.prepare("UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(sprintName);
+    }
+
+    return c.json({ results, allDone });
+  });
+
+  app.get("/data/spawns", (c) => {
+    const spawns = listSpawns(db);
+    return c.json(spawns);
+  });
+
+  // === Static frontend serving ===
+
+  app.get("/app/*", (c) => {
+    const reqPath = c.req.path.replace(/^\/app/, "");
+    const frontendDist = path.join(resolvedProjectDir, "frontend", "dist");
+
+    let filePath = path.join(frontendDist, reqPath);
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+      filePath = path.join(frontendDist, "index.html");
+    }
+
+    if (!fs.existsSync(filePath)) {
+      return c.text("Frontend not built. Run: cd frontend && npm run build", 404);
+    }
+
+    const content = fs.readFileSync(filePath);
+    const ext = path.extname(filePath);
+    const mimeTypes: Record<string, string> = {
+      ".html": "text/html",
+      ".js": "application/javascript",
+      ".css": "text/css",
+      ".svg": "image/svg+xml",
+      ".png": "image/png",
+      ".json": "application/json",
+    };
+    c.header("Content-Type", mimeTypes[ext] || "application/octet-stream");
+    return c.body(content);
+  });
+
+  // === Helper: build SprintState for frontend ===
+
+  function buildSprintState(sprint: Sprint) {
+    const sprintAgents = db.prepare(
+      "SELECT * FROM sprint_agents WHERE sprint_name = ?"
+    ).all(sprint.name) as SprintAgent[];
+
+    const buckets = inferAllBuckets({ db, sprintName: sprint.name });
+    const spawns = listSpawns(db);
+
+    const agents = sprintAgents.map((sa) => {
+      const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
+      const alive = spawn && !spawn.stopped_at ? isProcessAlive(spawn.pid) : false;
+
+      // Get last post
+      const lastPost = db.prepare(
+        "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 1"
+      ).get(sa.agent_handle) as { content: string } | undefined;
+
+      return {
+        handle: sa.agent_handle,
+        bucket: buckets.get(sa.agent_handle) ?? "planning",
+        mission: sa.mission ?? "",
+        branch: spawn?.branch ?? null,
+        lastPost: lastPost?.content ?? null,
+        additions: 0, // diff stats require git — skip for live view
+        deletions: 0,
+        filesChanged: 0,
+        alive,
+        exitCode: spawn?.exit_code ?? null,
+      };
+    });
+
+    return {
+      name: sprint.name,
+      goal: sprint.goal,
+      createdAt: sprint.created_at,
+      agents,
+    };
+  }
 
   return app;
 }

@@ -4,6 +4,7 @@ import { KanbanColumn } from './KanbanColumn';
 
 interface KanbanBoardProps {
   agents: AgentTile[];
+  sprintName?: string;
 }
 
 const COLUMNS: { bucket: BucketState; label: string }[] = [
@@ -14,7 +15,7 @@ const COLUMNS: { bucket: BucketState; label: string }[] = [
   { bucket: 'done', label: 'Done' },
 ];
 
-export const KanbanBoard: React.FC<KanbanBoardProps> = ({ agents }) => {
+export const KanbanBoard: React.FC<KanbanBoardProps> = ({ agents, sprintName }) => {
   const grouped = new Map<BucketState, AgentTile[]>();
   for (const col of COLUMNS) {
     grouped.set(col.bucket, []);
@@ -31,6 +32,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ agents }) => {
           bucket={bucket}
           label={label}
           agents={grouped.get(bucket) ?? []}
+          sprintName={sprintName}
         />
       ))}
     </div>

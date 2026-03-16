@@ -6,12 +6,14 @@ interface KanbanColumnProps {
   bucket: BucketState;
   label: string;
   agents: AgentTileType[];
+  sprintName?: string;
 }
 
 export const KanbanColumn: React.FC<KanbanColumnProps> = ({
   bucket,
   label,
   agents,
+  sprintName,
 }) => {
   return (
     <section className={`kanban-column ${bucket}`} aria-label={`${label} column`}>
@@ -23,7 +25,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
       </header>
       <div className="column-body">
         {agents.map((agent) => (
-          <AgentTile key={agent.handle} agent={agent} />
+          <AgentTile key={agent.handle} agent={agent} sprintName={sprintName} />
         ))}
       </div>
     </section>

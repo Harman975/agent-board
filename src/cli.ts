@@ -1,11 +1,13 @@
 import { Command } from "commander";
 import fs from "fs";
 import path from "path";
-import { initDb, dbExists } from "./db.js";
+import { initDb, dbExists, initBoard } from "./db.js";
 import { normalizeHandle } from "./agents.js";
 import { generateKey, hashKey } from "./auth.js";
 import { parseDuration } from "./supervision.js";
+import { readBoardRC, writeBoardRC, api, ApiError, type BoardRC } from "./boardrc.js";
 import {
+  c,
   renderAgent,
   renderAgentList,
   renderFeed,
@@ -26,6 +28,8 @@ import {
   renderOrg,
   renderSprintReport,
   renderSprintList,
+  renderLandingBrief,
+  renderAgentInspect,
   renderPortfolio,
   renderAlerts,
   type SpawnInfo,
@@ -35,7 +39,7 @@ import type { BriefingSummary } from "./supervision.js";
 import type { PostThread } from "./posts.js";
 import type { DagSummary, PromoteResult } from "./gitdag.js";
 import { execSync, spawn as nodeSpawn } from "child_process";
-import { runPreFlight, buildSprintReport, SPRINT_REPORT_PROTOCOL, mergeWithTestGates } from "./sprint-orchestrator.js";
+import { runPreFlight, buildSprintReport, buildLandingBrief, SPRINT_REPORT_PROTOCOL, mergeWithTestGates, startSprint, type AgentSpec, slugify, uniqueSprintName, validateDisjointScopes } from "./sprint-orchestrator.js";
 
 // === Error classes ===
 
@@ -46,43 +50,8 @@ export class CliError extends Error {
   }
 }
 
-export class ApiError extends CliError {
-  status: number;
-  serverError: string;
-  constructor(status: number, serverError: string) {
-    super(`API error (${status}): ${serverError}`);
-    this.name = "ApiError";
-    this.status = status;
-    this.serverError = serverError;
-  }
-}
-
 function die(message: string): never {
   throw new CliError(message);
-}
-
-// === .boardrc ===
-
-interface BoardRC {
-  url: string;
-  key: string;
-}
-
-const BOARDRC_FILE = ".boardrc";
-
-function readBoardRC(): BoardRC | null {
-  const rcPath = path.join(process.cwd(), BOARDRC_FILE);
-  if (!fs.existsSync(rcPath)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(rcPath, "utf-8"));
-  } catch {
-    return null;
-  }
-}
-
-function writeBoardRC(rc: BoardRC): void {
-  const rcPath = path.join(process.cwd(), BOARDRC_FILE);
-  fs.writeFileSync(rcPath, JSON.stringify(rc, null, 2) + "\n");
 }
 
 function requireRC(): BoardRC {
@@ -109,48 +78,7 @@ function walkDir(dir: string, base: string): string[] {
   return results;
 }
 
-// === HTTP client ===
-
-async function api<T>(
-  rc: BoardRC,
-  method: string,
-  endpoint: string,
-  body?: unknown
-): Promise<T> {
-  const url = `${rc.url}${endpoint}`;
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${rc.key}`,
-    "Content-Type": "application/json",
-  };
-
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-  } catch (err: any) {
-    if (err.cause?.code === "ECONNREFUSED" || err.message?.includes("fetch failed")) {
-      die(`Cannot connect to server at ${rc.url}. Is \`board serve\` running?`);
-    }
-    throw err;
-  }
-
-  let data: unknown;
-  try {
-    data = await res.json();
-  } catch {
-    throw new CliError(`Server returned non-JSON response (${res.status} ${res.statusText})`);
-  }
-
-  if (!res.ok) {
-    const errorMsg = (data as any)?.error ?? `HTTP ${res.status}`;
-    throw new ApiError(res.status, errorMsg);
-  }
-
-  return data as T;
-}
+// api(), readBoardRC, writeBoardRC, BoardRC, ApiError imported from boardrc.ts
 
 // === CLI ===
 
@@ -171,33 +99,12 @@ program
       console.log("Board already initialized.");
       return;
     }
-    const db = initDb();
 
-    // Create @admin agent
-    db.prepare(
-      "INSERT INTO agents (handle, name, mission) VALUES (?, ?, ?)"
-    ).run("@admin", "Admin", "Board administrator");
-
-    // Create #general channel
-    db.prepare(
-      "INSERT INTO channels (name, description) VALUES (?, ?)"
-    ).run("#general", "General discussion");
-
-    // Generate and store admin API key
-    const rawKey = generateKey();
-    db.prepare(
-      "INSERT INTO api_keys (key_hash, agent_handle) VALUES (?, ?)"
-    ).run(hashKey(rawKey), null);
-
-    db.close();
-
-    // Initialize DAG bare repo
-    const { initDag } = await import("./gitdag.js");
-    initDag(process.cwd());
+    const { adminKey } = initBoard();
 
     // Write .boardrc
     const serverUrl = `http://localhost:${opts.port}`;
-    writeBoardRC({ url: serverUrl, key: rawKey });
+    writeBoardRC({ url: serverUrl, key: adminKey });
 
     // Auto-start the server in the background
     const serverChild = nodeSpawn(process.argv[0], [process.argv[1], "serve", "--port", opts.port], {
@@ -209,7 +116,7 @@ program
     serverChild.unref();
 
     console.log("Board initialized.");
-    console.log(`Admin key: ${rawKey}`);
+    console.log(`Admin key: ${adminKey}`);
     console.log("Saved to .boardrc — keep this file secure.");
     console.log("DAG initialized at .dag/");
     console.log(`\nServer started in background (PID ${serverChild.pid}) on ${serverUrl}`);
@@ -231,18 +138,116 @@ program
     const { serve } = await import("@hono/node-server");
     const { createApp } = await import("./server.js");
     const { getDb } = await import("./db.js");
+    const { BoardEventEmitter } = await import("./bucket-engine.js");
 
     if (!dbExists()) {
       die("No board found. Run `board init` first.");
     }
 
     const db = getDb();
-    const app = createApp(db);
+    const emitter = new BoardEventEmitter();
+    const app = createApp(db, process.cwd(), emitter);
     const port = parseInt(opts.port, 10);
 
     const server = serve({ fetch: app.fetch, port }, () => {
       console.log(`AgentBoard server listening on http://localhost:${port}`);
+      console.log(`Kanban UI: http://localhost:${port}/app/`);
     });
+
+    // WebSocket support
+    try {
+      const { WebSocketServer } = await import("ws");
+      const { inferAllBuckets } = await import("./bucket-engine.js");
+      const { listSpawns: listSpawnsFn, isProcessAlive: isProcAlive } = await import("./spawner.js");
+      const wss = new WebSocketServer({ server: server as any });
+
+      // Send initial sprint state to new connections
+      wss.on("connection", (ws) => {
+        // Send initial state
+        try {
+          const row = db.prepare(
+            "SELECT * FROM sprints WHERE status = 'running' ORDER BY created_at DESC LIMIT 1"
+          ).get() as any;
+          if (row) {
+            const sprintAgents = db.prepare(
+              "SELECT * FROM sprint_agents WHERE sprint_name = ?"
+            ).all(row.name) as any[];
+            const buckets = inferAllBuckets({ db, sprintName: row.name });
+            const spawns = listSpawnsFn(db);
+
+            const agents = sprintAgents.map((sa: any) => {
+              const spawn = spawns.find((s: any) => s.agent_handle === sa.agent_handle);
+              const alive = spawn && !spawn.stopped_at ? isProcAlive(spawn.pid) : false;
+              const lastPost = db.prepare(
+                "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 1"
+              ).get(sa.agent_handle) as { content: string } | undefined;
+              return {
+                handle: sa.agent_handle,
+                bucket: buckets.get(sa.agent_handle) ?? "planning",
+                mission: sa.mission ?? "",
+                branch: spawn?.branch ?? null,
+                lastPost: lastPost?.content ?? null,
+                additions: 0,
+                deletions: 0,
+                filesChanged: 0,
+                alive,
+                exitCode: spawn?.exit_code ?? null,
+              };
+            });
+
+            ws.send(JSON.stringify({
+              type: "initial_state",
+              data: { name: row.name, goal: row.goal, createdAt: row.created_at, agents },
+            }));
+          }
+        } catch { /* best effort */ }
+
+        const onPost = (data: any) => {
+          ws.send(JSON.stringify({ type: "post_created", data }));
+        };
+        const onBucket = (data: any) => {
+          ws.send(JSON.stringify({ type: "bucket_changed", data }));
+        };
+        const onSpawn = (data: any) => {
+          ws.send(JSON.stringify({ type: "spawn_stopped", data }));
+        };
+        emitter.on("post_created", onPost);
+        emitter.on("bucket_changed", onBucket);
+        emitter.on("spawn_stopped", onSpawn);
+        ws.on("close", () => {
+          emitter.removeListener("post_created", onPost);
+          emitter.removeListener("bucket_changed", onBucket);
+          emitter.removeListener("spawn_stopped", onSpawn);
+        });
+      });
+
+      // Bucket polling — re-infer every 5s and broadcast changes
+      type BucketState = "planning" | "in_progress" | "blocked" | "review" | "done";
+      const bucketCache = new Map<string, BucketState>();
+      setInterval(() => {
+        try {
+          const row = db.prepare(
+            "SELECT name FROM sprints WHERE status = 'running' ORDER BY created_at DESC LIMIT 1"
+          ).get() as { name: string } | undefined;
+          if (!row) return;
+          const buckets = inferAllBuckets({ db, sprintName: row.name });
+          for (const [handle, bucket] of buckets) {
+            const prev = bucketCache.get(handle);
+            if (prev && prev !== bucket) {
+              emitter.emit("bucket_changed", { agent_handle: handle, from: prev, to: bucket });
+              // Broadcast to all clients
+              const msg = JSON.stringify({ type: "bucket_changed", data: { handle, bucket } });
+              for (const client of wss.clients) {
+                if (client.readyState === 1) client.send(msg);
+              }
+            }
+            bucketCache.set(handle, bucket);
+          }
+        } catch { /* polling is best-effort */ }
+      }, 5000);
+    } catch {
+      console.log("(WebSocket support unavailable — install 'ws' package for live updates)");
+    }
 
     // Graceful shutdown
     const shutdown = () => {
@@ -1114,134 +1119,166 @@ program
     console.log("\n" + JSON.stringify(validation, null, 2));
   });
 
-// --- board merge-sprint ---
-program
-  .command("merge-sprint")
-  .description("Merge all agent branches into main sequentially, testing after each merge")
-  .option("--dry-run", "Run pre-flight checks and print merge order without merging")
-  .option("--order <handles>", "Comma-separated agent handles to override merge order")
-  .action(async (opts: { dryRun?: boolean; order?: string }) => {
-    const projectDir = process.cwd();
-    const pf = await runPreFlight(projectDir);
-
-    if (!pf.allStopped) {
-      die(`Pre-flight failed: running agents: ${pf.running.map((s) => s.agent_handle).join(", ")}\nStop all agents before merging.`);
-    }
-    console.log("Pre-flight: all agents stopped.");
-
-    if (!pf.testsPass) {
-      die("Pre-flight failed: tests do not pass on main.");
-    }
-    console.log("Pre-flight: tests pass.");
-
-    // Determine merge order
-    let mergeOrder: string[];
-    if (opts.order) {
-      mergeOrder = opts.order.split(",").map((h) => normalizeHandle(h.trim()));
-    } else {
-      mergeOrder = pf.mergeOrder;
-    }
-
-    if (mergeOrder.length === 0) {
-      console.log("No agent branches to merge. Nothing to do.");
-      return;
-    }
-
-    console.log(`\nMerge order (${mergeOrder.length} branches):`);
-    mergeOrder.forEach((h, i) => {
-      const info = pf.branches.find((b) => b.agent_handle === h);
-      console.log(`  ${i + 1}. ${h}${info ? ` (${info.filesChanged} files)` : ""}`);
-    });
-
-    if (opts.dryRun) {
-      console.log("\nDry run — no merges performed.");
-      return;
-    }
-
-    // === Merge each branch ===
-    const { getDb } = await import("./db.js");
-    const db = getDb();
-
-    try {
-      const { merged } = await mergeWithTestGates(mergeOrder, projectDir, { db });
-
-      // Post summary to #status
-      console.log(`\nAll ${merged.length} merges succeeded!`);
-      try {
-        const rc = requireRC();
-        await api(rc, "POST", "/api/posts", {
-          content: `Sprint merge complete: ${merged.join(", ")} merged successfully.`,
-          channel: "#status",
-        });
-        console.log("Summary posted to #status.");
-      } catch {
-        console.log("(Could not post summary to #status)");
-      }
-    } finally {
-      db.close();
-    }
-  });
-
 // --- board sprint ---
 const sprint = program.command("sprint").description("Sprint orchestrator — manage parallel agent work");
 
 sprint
   .command("suggest <goal>")
-  .description("Generate an LLM prompt for sprint planning based on src/ tree and available identities")
-  .action(async (goal: string) => {
-    // 1. Read file tree of src/
-    const srcDir = path.join(process.cwd(), "src");
-    let fileTree: string[] = [];
-    if (fs.existsSync(srcDir)) {
-      fileTree = walkDir(srcDir, process.cwd());
+  .description("Smart task decomposition — analyzes codebase, calls Claude to generate a sprint plan")
+  .option("--auto", "Call Claude CLI automatically instead of printing the prompt")
+  .option("--save <path>", "Save the decomposition result to a JSON file")
+  .action(async (goal: string, opts: { auto?: boolean; save?: string }) => {
+    const projectDir = process.cwd();
+    const {
+      analyzeImports,
+      findCouplingClusters,
+      getFileContext,
+      buildDecompositionPrompt,
+      parseDecompositionResponse,
+    } = await import("./decomposer.js");
+    const { listIdentities, loadIdentity: loadId } = await import("./identities.js");
+
+    console.log("Analyzing codebase...");
+
+    // 1. Analyze import graph
+    const imports = analyzeImports(projectDir);
+    const clusters = findCouplingClusters(imports);
+
+    // 2. Get file context (headers + exports)
+    const fileContexts = new Map<string, import("./decomposer.js").FileContext>();
+    const allFiles: string[] = [];
+    for (const [file] of imports) {
+      allFiles.push(file);
+      const absPath = path.resolve(projectDir, file);
+      fileContexts.set(file, getFileContext(absPath));
     }
 
-    // 2. Read identities from identities/ folder
-    const { listIdentities, loadIdentity: loadId } = await import("./identities.js");
-    const identityNames = listIdentities(process.cwd());
-    const agents: { name: string; description: string }[] = [];
+    // 3. Load identities
+    const identityNames = listIdentities(projectDir);
+    const identities: { name: string; description: string }[] = [];
     for (const name of identityNames) {
       try {
-        const id = loadId(name, process.cwd());
-        agents.push({ name: id.name, description: id.description });
-      } catch { /* skip malformed identities */ }
+        const id = loadId(name, projectDir);
+        identities.push({ name: id.name, description: id.description });
+      } catch { /* skip malformed */ }
     }
 
-    // 3. Output formatted prompt
-    const prompt = `You are a sprint planner for a software project.
+    console.log(`  ${allFiles.length} files, ${clusters.length} coupling clusters, ${identities.length} identities`);
 
-## Goal
-${goal}
+    // 4. Build prompt
+    const prompt = buildDecompositionPrompt({
+      goal,
+      fileTree: allFiles,
+      clusters,
+      fileContexts,
+      identities,
+    });
 
-## Source Tree
-\`\`\`
-${fileTree.join("\n")}
-\`\`\`
-
-## Available Agents
-${agents.map((a) => `- **${a.name}**: ${a.description}`).join("\n")}
-
-## Instructions
-Break the goal into parallel tasks. Assign each task to an agent whose expertise matches.
-Ensure scopes are disjoint — no file should appear in two agents' scopes.
-
-Respond with the following JSON schema:
-
-\`\`\`json
-{
-  "goal": "string — the sprint goal",
-  "tasks": [
-    {
-      "agent": "string — agent identity name",
-      "handle": "string — @handle for the agent",
-      "mission": "string — detailed task description",
-      "scope": ["string — file paths this agent owns"]
+    if (!opts.auto) {
+      console.log("\n--- Decomposition Prompt ---\n");
+      console.log(prompt);
+      console.log("\nRun with --auto to call Claude CLI automatically.");
+      return;
     }
-  ]
-}
-\`\`\`
-`;
-    console.log(prompt);
+
+    // 5. Call Claude CLI
+    console.log("Calling Claude for task decomposition...");
+    const { execSync } = await import("child_process");
+    const escapedPrompt = prompt.replace(/'/g, "'\\''");
+    let raw: string;
+    try {
+      raw = execSync(`claude -p '${escapedPrompt}'`, {
+        cwd: projectDir,
+        timeout: 120000,
+        encoding: "utf-8",
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    } catch (err: any) {
+      die(`Claude CLI failed: ${err.message}`);
+    }
+
+    // 6. Parse response
+    const result = parseDecompositionResponse(raw);
+    console.log(`\nDecomposition: ${result.tasks.length} tasks\n`);
+    for (const task of result.tasks) {
+      console.log(`  ${task.handle} (${task.agent})`);
+      console.log(`    Mission: ${task.mission.slice(0, 100)}${task.mission.length > 100 ? "..." : ""}`);
+      console.log(`    Scope: ${task.scope.join(", ")}`);
+      console.log();
+    }
+
+    if (opts.save) {
+      fs.writeFileSync(opts.save, JSON.stringify(result, null, 2));
+      console.log(`Plan saved to ${opts.save}`);
+      console.log(`Start with: board sprint start --name my-sprint --goal "${goal}" --plan ${opts.save}`);
+    }
+  });
+
+sprint
+  .command("run <goal>")
+  .description("End-to-end sprint: decompose goal → confirm plan → spawn agents")
+  .requiredOption("--name <name>", "Sprint name (slug)")
+  .action(async (goal: string, opts: { name: string }) => {
+    const projectDir = process.cwd();
+    const rc = requireRC();
+    const { decompose } = await import("./decomposer.js");
+
+    console.log("Analyzing codebase and decomposing task...\n");
+
+    let result;
+    try {
+      result = await decompose(goal, projectDir);
+    } catch (err: any) {
+      die(`Decomposition failed: ${err.message}`);
+    }
+
+    // Display plan
+    console.log(`Goal: ${result.goal}`);
+    console.log(`Tasks: ${result.tasks.length}\n`);
+    for (let i = 0; i < result.tasks.length; i++) {
+      const t = result.tasks[i];
+      console.log(`  ${i + 1}. ${t.handle} (${t.agent})`);
+      console.log(`     ${t.mission.slice(0, 120)}${t.mission.length > 120 ? "..." : ""}`);
+      console.log(`     Scope: ${t.scope.join(", ")}`);
+      console.log();
+    }
+
+    // Confirm
+    const readline = await import("readline");
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((resolve) => {
+      rl.question("Proceed? [Y/n/edit] ", resolve);
+    });
+    rl.close();
+
+    if (answer.toLowerCase() === "n") {
+      console.log("Cancelled.");
+      return;
+    }
+
+    if (answer.toLowerCase() === "edit") {
+      const planPath = path.join(projectDir, `sprint-${opts.name}.json`);
+      fs.writeFileSync(planPath, JSON.stringify(result, null, 2));
+      console.log(`Plan saved to ${planPath}. Edit it, then run:`);
+      console.log(`  board sprint start --name ${opts.name} --goal "${goal}" --plan ${planPath}`);
+      return;
+    }
+
+    // Save plan and start sprint
+    const planPath = path.join(projectDir, `sprint-${opts.name}.json`);
+    fs.writeFileSync(planPath, JSON.stringify(result, null, 2));
+
+    // Delegate to sprint start
+    const { execSync } = await import("child_process");
+    const escapedGoal = goal.replace(/"/g, '\\"');
+    execSync(
+      `npx tsx src/cli.ts sprint start --name ${opts.name} --goal "${escapedGoal}" --plan ${planPath}`,
+      { cwd: projectDir, stdio: "inherit" }
+    );
+
+    // Open kanban
+    const port = rc.url.match(/:(\d+)/)?.[1] ?? "3141";
+    console.log(`\nKanban: http://localhost:${port}/app/`);
   });
 
 sprint
@@ -1255,186 +1292,62 @@ sprint
   .action(async (opts: { name: string; goal: string; plan?: string; agents?: string; yaml?: string }) => {
     const rc = requireRC();
     const { getDb } = await import("./db.js");
-    const { spawnAgent, killAgent } = await import("./spawner.js");
-    const { createAgent, getAgent } = await import("./agents.js");
-    const { generateKey, storeKey } = await import("./auth.js");
-    const { loadIdentity } = await import("./identities.js");
     const db = getDb();
 
-    // Check sprint name doesn't already exist
-    const existing = db.prepare("SELECT name FROM sprints WHERE name = ?").get(opts.name);
-    if (existing) {
-      db.close();
-      die(`Sprint "${opts.name}" already exists. Choose a different name.`);
-    }
-
-    // Parse agent specs — support --plan (simple mode) or --agents/--yaml (full mode)
-    interface AgentSpec { handle: string; identity?: string; mission: string; scope?: string[] }
+    // Parse agent specs from --plan, --agents, or --yaml
     let agentSpecs: AgentSpec[] = [];
 
     if (opts.plan) {
-      // Simple plan mode: read JSON plan file with tasks array
       const planPath = path.resolve(opts.plan);
-      if (!fs.existsSync(planPath)) {
-        db.close();
-        die(`Plan file not found: ${planPath}`);
-      }
-
+      if (!fs.existsSync(planPath)) { db.close(); die(`Plan file not found: ${planPath}`); }
       let plan: { goal: string; tasks: { agent: string; handle: string; mission: string; scope: string[] }[] };
-      try {
-        plan = JSON.parse(fs.readFileSync(planPath, "utf-8"));
-      } catch (err: any) {
-        db.close();
-        die(`Invalid JSON in plan file: ${err.message}`);
-      }
-
-      if (!plan.tasks || !Array.isArray(plan.tasks)) {
-        db.close();
-        die("Plan must contain a 'tasks' array.");
-      }
-
-      // Validate scopes are disjoint
-      const fileOwners = new Map<string, string>();
-      const overlaps: string[] = [];
-      for (const task of plan.tasks) {
-        for (const file of task.scope ?? []) {
-          const existingOwner = fileOwners.get(file);
-          if (existingOwner) {
-            overlaps.push(`${file} claimed by both ${existingOwner} and ${task.handle}`);
-          } else {
-            fileOwners.set(file, task.handle);
-          }
-        }
-      }
-
-      if (overlaps.length > 0) {
-        db.close();
-        die(`Scope overlap detected — aborting:\n${overlaps.map((o) => `  - ${o}`).join("\n")}`);
-      }
-
-      agentSpecs = plan.tasks.map((t) => ({
-        handle: t.handle,
-        identity: t.agent,
-        mission: t.mission,
-        scope: t.scope,
-      }));
+      try { plan = JSON.parse(fs.readFileSync(planPath, "utf-8")); }
+      catch (err: any) { db.close(); die(`Invalid JSON in plan file: ${err.message}`); }
+      if (!plan.tasks || !Array.isArray(plan.tasks)) { db.close(); die("Plan must contain a 'tasks' array."); }
+      agentSpecs = plan.tasks.map((t) => ({ handle: t.handle, identity: t.agent, mission: t.mission, scope: t.scope }));
     } else if (opts.yaml) {
-      // Simple YAML-like parsing: read file, parse as JSON (YAML support can come later)
       const content = fs.readFileSync(opts.yaml, "utf-8");
       try {
         const parsed = JSON.parse(content);
         agentSpecs = parsed.agents || [];
-        // Allow YAML to override name/goal
         if (!opts.name && parsed.name) opts.name = parsed.name;
         if (!opts.goal && parsed.goal) opts.goal = parsed.goal;
-      } catch {
-        db.close();
-        die(`Failed to parse sprint file: ${opts.yaml}`);
-      }
+      } catch { db.close(); die(`Failed to parse sprint file: ${opts.yaml}`); }
     } else if (opts.agents) {
-      try {
-        agentSpecs = JSON.parse(opts.agents);
-      } catch {
-        db.close();
-        die("Invalid --agents JSON. Expected: [{\"handle\":\"@x\",\"mission\":\"...\"}]");
-      }
+      try { agentSpecs = JSON.parse(opts.agents); }
+      catch { db.close(); die("Invalid --agents JSON. Expected: [{\"handle\":\"@x\",\"mission\":\"...\"}]"); }
     } else {
       db.close();
       die("Provide --plan, --agents, or --yaml to define sprint agents.");
     }
 
-    if (agentSpecs.length === 0) {
-      db.close();
-      die("No agents defined for this sprint.");
-    }
-
-    // Create sprint record
-    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run(opts.name, opts.goal);
+    if (agentSpecs.length === 0) { db.close(); die("No agents defined for this sprint."); }
 
     console.log(`Starting sprint: ${opts.goal}`);
     console.log(`Tasks: ${agentSpecs.length}\n`);
 
-    // Spawn agents atomically
-    const spawned: string[] = [];
-    const projectDir = process.cwd();
+    try {
+      const result = await startSprint({
+        name: opts.name,
+        goal: opts.goal,
+        specs: agentSpecs,
+        projectDir: process.cwd(),
+        serverUrl: rc.url,
+        db,
+        onSpawn: (handle, pid, branch) => {
+          console.log(`  Spawned ${handle} (PID ${pid}, branch: ${branch})`);
+        },
+      });
 
-    for (const spec of agentSpecs) {
-      const handle = normalizeHandle(spec.handle);
-
-      try {
-        // Create agent if doesn't exist
-        if (!getAgent(db, handle)) {
-          createAgent(db, {
-            handle: handle.slice(1),
-            name: handle.slice(1),
-            role: "worker",
-            mission: spec.mission,
-          });
-        }
-
-        let mission = spec.mission;
-
-        // Load and inject identity with report protocol
-        let identity = undefined;
-        if (spec.identity) {
-          try {
-            identity = loadIdentity(spec.identity, projectDir);
-            // Inject sprint report protocol
-            identity = { ...identity, content: identity.content + SPRINT_REPORT_PROTOCOL };
-          } catch {
-            // Try loading identity from identities/ folder directly
-            const identityPath = path.join(projectDir, "identities", `${spec.identity}.md`);
-            if (fs.existsSync(identityPath)) {
-              const identityContent = fs.readFileSync(identityPath, "utf-8");
-              mission = `[Identity: ${spec.identity}]\n${identityContent}\n\n${mission}`;
-            } else {
-              throw new Error(`Identity not found: ${spec.identity}`);
-            }
-          }
-        }
-
-        const apiKey = generateKey();
-        storeKey(db, apiKey, handle);
-
-        const result = spawnAgent(db, {
-          handle,
-          mission,
-          apiKey,
-          serverUrl: rc.url,
-          projectDir,
-          identity,
-          scope: spec.scope,
-        });
-
-        // Record in sprint_agents
-        db.prepare(
-          "INSERT INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)"
-        ).run(opts.name, handle, spec.identity || null, spec.mission);
-
-        spawned.push(handle);
-        console.log(`  Spawned ${handle} (PID ${result.pid}, branch: ${result.branch})`);
-      } catch (err: any) {
-        // Atomic rollback — kill all already-spawned agents
-        console.error(`\nFailed to spawn ${handle}: ${err.message}`);
-        console.error("Rolling back — killing all spawned agents...");
-        for (const h of spawned) {
-          try {
-            killAgent(db, h, projectDir);
-            console.error(`  Killed ${h}`);
-          } catch { /* best effort */ }
-        }
-        // Mark sprint as failed
-        db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(opts.name);
-        db.close();
-        throw new CliError(`Failed to spawn ${handle}: ${err.message}`);
-      }
+      console.log(`\nSprint "${opts.name}" started with ${result.spawned.length} agents.`);
+      console.log(`  board sprint status ${opts.name}  — check progress`);
+      console.log(`  board sprint land ${opts.name}    — review and merge`);
+      console.log(`  board alerts                      — check for issues`);
+    } catch (err: any) {
+      throw new CliError(err.message);
+    } finally {
+      db.close();
     }
-
-    console.log(`\nSprint "${opts.name}" started with ${spawned.length} agents.`);
-    console.log(`  board sprint status ${opts.name}  — check progress`);
-    console.log(`  board sprint finish ${opts.name}  — finish and merge`);
-    console.log(`  board alerts                      — check for issues`);
-    db.close();
   });
 
 sprint
@@ -1462,103 +1375,158 @@ sprint
   });
 
 sprint
-  .command("finish <name>")
-  .description("Show CEO report and merge sprint branches")
-  .option("--detail", "Show expanded tiles with full reports")
-  .option("--yes", "Skip merge confirmation prompt")
-  .option("--order <handles>", "Comma-separated agent handles to override merge order")
-  .action(async (name: string, opts: { detail?: boolean; yes?: boolean; order?: string }) => {
+  .command("land <name>")
+  .description("CEO landing experience — review agent work in English, inspect, merge passing")
+  .option("--yes", "Skip interactive prompts, merge all passing agents")
+  .action(async (name: string, opts: { yes?: boolean }) => {
     const projectDir = process.cwd();
+    const readline = await import("readline");
 
-    // Build and show the CEO report
-    let report: SprintReport;
-    try {
-      report = await buildSprintReport(name, projectDir);
-    } catch (err: any) {
-      die(err.message);
-    }
+    async function runLanding(): Promise<void> {
+      console.log(`\n${c.dim}Building landing brief...${c.reset}\n`);
 
-    console.log(renderSprintReport(report, opts.detail));
+      let brief;
+      try {
+        brief = await buildLandingBrief(name, projectDir);
+      } catch (err: any) {
+        die(err.message);
+      }
 
-    // Check all agents stopped
-    const stillRunning = report.agents.filter((a) => a.alive && !a.stopped);
-    if (stillRunning.length > 0) {
-      die(`\nCannot finish: ${stillRunning.map((a) => a.handle).join(", ")} still running.\nStop all agents first, then run sprint finish again.`);
-    }
+      console.log(renderLandingBrief(brief));
 
-    // Run tests on main
-    console.log("\nRunning tests on main...");
-    try {
-      execSync("npm test", { cwd: projectDir, stdio: "pipe", timeout: 120_000 });
-      console.log("Tests pass on main.");
-    } catch {
-      die("Tests fail on main. Fix before merging.");
-    }
-
-    // Determine merge order
-    let mergeOrder: string[];
-    if (opts.order) {
-      mergeOrder = opts.order.split(",").map((h) => normalizeHandle(h.trim()));
-    } else {
-      mergeOrder = report.mergeOrder;
-    }
-
-    if (mergeOrder.length === 0) {
-      console.log("\nNo branches to merge.");
-      // Mark sprint as finished
-      const { getDb } = await import("./db.js");
-      const db = getDb();
-      db.prepare("UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
-      db.close();
-      return;
-    }
-
-    // Confirm merge
-    if (!opts.yes) {
-      const readline = await import("readline");
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      const answer = await new Promise<string>((resolve) => {
-        rl.question(`\nMerge all ${mergeOrder.length} branches? [y/N] `, resolve);
-      });
-      rl.close();
-      if (answer.toLowerCase() !== "y") {
-        console.log("Merge cancelled.");
+      // Non-interactive mode
+      if (opts.yes) {
+        const passing = brief.agents.filter((a) => a.status === "passed");
+        if (passing.length === 0) {
+          console.log(`\n  No passing agents to merge.`);
+          return;
+        }
+        await doMerge(passing.map((a) => a.handle), name, projectDir);
         return;
       }
-    }
 
-    // Sequential merge with test gates
-    const { getDb } = await import("./db.js");
-    const db = getDb();
-    const markFailed = () => {
-      db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
-    };
+      // Interactive mode
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const ask = (q: string): Promise<string> => new Promise((resolve) => rl.question(q, (a) => resolve(a.trim())));
 
-    try {
-      const { merged } = await mergeWithTestGates(mergeOrder, projectDir, {
-        db,
-        onFailure: markFailed,
-      });
-
-      // Mark sprint finished
-      db.prepare("UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(name);
-
-      console.log(`\nSprint "${name}" complete! ${merged.length} branches merged.`);
-
-      // Post summary
       try {
-        const rc = requireRC();
-        await api(rc, "POST", "/api/posts", {
-          content: `Sprint "${name}" finished. Merged: ${merged.join(", ")}.`,
-          channel: "#status",
-        });
-        console.log("Summary posted to #status.");
-      } catch {
-        console.log("(Could not post summary to #status)");
+        await interactiveLoop(brief, rl, ask, name, projectDir);
+      } finally {
+        rl.close();
       }
-    } finally {
-      db.close();
     }
+
+    async function interactiveLoop(
+      brief: Awaited<ReturnType<typeof buildLandingBrief>>,
+      rl: import("readline").Interface,
+      ask: (q: string) => Promise<string>,
+      sprintName: string,
+      dir: string,
+    ): Promise<void> {
+      const passing = brief.agents.filter((a) => a.status === "passed");
+      const hasRunning = brief.summary.running > 0;
+
+      // Build prompt
+      console.log("");
+      let prompt = `  ${c.bold}[enter]${c.reset} land ${passing.length} passing`;
+      if (hasRunning) prompt += `  ${c.bold}[w]${c.reset} wait`;
+      for (let i = 0; i < brief.agents.length; i++) {
+        prompt += `  ${c.bold}[${i + 1}]${c.reset} ${brief.agents[i].handle}`;
+      }
+      prompt += `  ${c.bold}[q]${c.reset} quit`;
+      console.log(prompt);
+
+      const choice = await ask("  > ");
+
+      if (choice === "q") return;
+
+      if (choice === "w" && hasRunning) {
+        console.log(`  ${c.dim}Waiting 10 seconds...${c.reset}`);
+        await new Promise((resolve) => setTimeout(resolve, 10000));
+        rl.close();
+        await runLanding();
+        return;
+      }
+
+      // Check if user picked an agent number
+      const num = parseInt(choice, 10);
+      if (!isNaN(num) && num >= 1 && num <= brief.agents.length) {
+        const agent = brief.agents[num - 1];
+        console.log("");
+        console.log(renderAgentInspect(agent));
+
+        const inspectChoice = await ask("  > ");
+
+        if (inspectChoice === "m" && agent.status === "passed") {
+          await doMerge([agent.handle], sprintName, dir);
+          return;
+        }
+
+        if (inspectChoice === "d" && agent.branch) {
+          try {
+            const diff = execSync(`git diff main..${agent.branch}`, {
+              cwd: dir, encoding: "utf-8", stdio: "pipe",
+            });
+            console.log(diff);
+          } catch (err: any) {
+            console.log(`  ${c.red}Could not show diff: ${err.message}${c.reset}`);
+          }
+        }
+
+        // Go back to main loop
+        await interactiveLoop(brief, rl, ask, sprintName, dir);
+        return;
+      }
+
+      // Enter = land all passing
+      if (choice === "") {
+        if (passing.length === 0) {
+          console.log(`\n  No passing agents to merge.`);
+          return;
+        }
+        await doMerge(passing.map((a) => a.handle), sprintName, dir);
+        return;
+      }
+
+      console.log(`  ${c.dim}Unknown option.${c.reset}`);
+      await interactiveLoop(brief, rl, ask, sprintName, dir);
+    }
+
+    async function doMerge(handles: string[], sprintName: string, dir: string): Promise<void> {
+      console.log(`\n  ${c.bold}Landing ${handles.length} agent${handles.length === 1 ? "" : "s"}...${c.reset}`);
+
+      const { getDb } = await import("./db.js");
+      const db = getDb();
+      try {
+        const result = await mergeWithTestGates(handles, dir, { db });
+
+        // Mark sprint finished
+        db.prepare(
+          "UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?"
+        ).run(sprintName);
+
+        console.log(`\n  ${c.green}Landed ${result.merged.length} agent${result.merged.length === 1 ? "" : "s"}.${c.reset}`);
+
+        // Post summary to #status
+        try {
+          const rc = requireRC();
+          await api(rc, "POST", "/api/posts", {
+            content: `Sprint "${sprintName}" landed. Merged: ${result.merged.join(", ")}.`,
+            channel: "#status",
+          });
+          console.log(`  ${c.dim}Posted to #status${c.reset}`);
+        } catch { /* best effort */ }
+      } catch (err: any) {
+        console.error(`  ${c.red}Merge failed: ${err.message}${c.reset}`);
+        db.prepare(
+          "UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?"
+        ).run(sprintName);
+      } finally {
+        db.close();
+      }
+    }
+
+    await runLanding();
   });
 
 // --- board steer ---
@@ -1871,6 +1839,20 @@ const METRIC_PRESETS: Record<string, MetricPreset> = {
     direction: "lower",
     guard: "npm test > /dev/null 2>&1",
   },
+  condense: {
+    description: "Structural code condensation — merge files, inline functions, eliminate dead exports (uses condenser identity)",
+    eval: "find src -name '*.ts' ! -name '*.test.ts' | xargs wc -l",
+    metric: "tail -1 eval.log | awk '{print $1}'",
+    direction: "lower",
+    guard: "npm test > /dev/null 2>&1",
+  },
+  explore: {
+    description: "Branching exploration — try 3 approaches per round, pick the best (uses explorer identity)",
+    eval: "find src -name '*.ts' ! -name '*.test.ts' | xargs wc -l",
+    metric: "tail -1 eval.log | awk '{print $1}'",
+    direction: "lower",
+    guard: "npm test > /dev/null 2>&1",
+  },
 };
 
 const research = program.command("research").description("Auto-research: self-improving background agent");
@@ -1886,8 +1868,10 @@ research
   .option("--metric <command>", "Shell command to extract metric from eval.log (overrides preset)")
   .option("--direction <dir>", "Optimize direction: 'higher' or 'lower' (overrides preset)")
   .option("--guard <command>", "Guard command that must exit 0 for KEEP (overrides preset)")
+  .option("--identity <name>", "Identity to use (default: researcher, condense preset uses condenser)")
+  .option("--width <n>", "Exploration width for explorer identity — approaches per round (default: 3)")
   .option("--foreground", "Run in foreground instead of background")
-  .action(async (opts: { tag?: string; preset?: string; focus?: string; scope?: string; eval?: string; metric?: string; direction?: string; guard?: string; foreground?: boolean }) => {
+  .action(async (opts: { tag?: string; preset?: string; focus?: string; scope?: string; eval?: string; metric?: string; direction?: string; guard?: string; identity?: string; width?: string; foreground?: boolean }) => {
     const { initDb } = await import("./db.js");
     const { loadIdentity } = await import("./identities.js");
     const { createAgent, getAgent } = await import("./agents.js");
@@ -1925,13 +1909,14 @@ research
       die(`Researcher is already running (PID ${existingSpawn.pid}). Use \`board research stop${opts.tag ? ` --tag ${opts.tag}` : ""}\` first.`);
     }
 
-    // Load researcher identity
+    // Load identity — condense/explore presets auto-select their identity
+    const identityName = opts.identity || (presetName === "condense" ? "condenser" : presetName === "explore" ? "explorer" : "researcher");
     let identity;
     try {
-      identity = loadIdentity("researcher", process.cwd());
+      identity = loadIdentity(identityName, process.cwd());
     } catch {
       db.close();
-      die("Researcher identity not found at identities/researcher.md");
+      die(`Identity not found at identities/${identityName}.md`);
     }
 
     // Build mission with metrics, focus, and scope
@@ -1948,11 +1933,12 @@ research
 
     // Inject metric config into the identity template
     // These replace {{PLACEHOLDER}} tokens in identities/researcher.md
-    const metricConfig = {
+    const metricConfig: Record<string, string> = {
       EVAL_COMMAND: resolvedMetric.eval,
       METRIC_COMMAND: resolvedMetric.metric,
       DIRECTION: resolvedMetric.direction,
       GUARD_COMMAND: resolvedMetric.guard,
+      WIDTH: opts.width || "3",
     };
 
     if (identity) {

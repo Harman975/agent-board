@@ -9,3 +9,7 @@ dist/
 .dag/
 .dag-promote.patch
 .board-server.log
+eval.log
+results.md
+agent.log
+sprint-*.json

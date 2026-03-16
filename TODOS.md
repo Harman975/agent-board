@@ -26,23 +26,46 @@ Built: cli.ts:1140-1169. Tails agent log file with `--follow` flag for live tail
 ### ~~Ship as npm package~~ ✓ (config done)
 Config complete: shebang via tsup banner, `"files": ["dist"]` in package.json, bin entry `"board": "./dist/cli.js"`. Just needs `npm publish` when ready.
 
+### ~~OODA Command Center~~ ✓
+Built in parallel sprint (4 agents, zero merge conflicts):
+- **Scope enforcement**: Pre-commit git hook parses CLAUDE.md File Scope, blocks out-of-scope changes. `spawner.ts` wires scope to `spawnAgent()`.
+- **Smart decomposer**: `src/decomposer.ts` — regex import graph, BFS coupling clusters, file headers + export signatures, Claude CLI integration via DI executor. `board sprint suggest --auto`.
+- **Bucket inference engine**: `src/bucket-engine.ts` — auto-categorizes agents into Planning/InProgress/Blocked/Review/Done based on spawn records, posts, git state, process liveness.
+- **React kanban frontend**: `frontend/` — Vite + React SPA with WebSocket auto-reconnect, kanban columns, expandable agent tiles, diff stats.
+- **Wiring**: WebSocket in serve command, EventEmitter in server.ts, static frontend serving at `/app/`, unified `board sprint run` command, bucket/spawn data endpoints.
+- **Auto-research condensing**: Researcher agent ran lean preset, 5 optimizations (7628→7574 LOC): safeJsonParse extraction, listRoutesByTeam delegation, ANSI color dedup, CliError cleanup, ensureWorkChannels simplification.
+
+### ~~`board merge-sprint`~~ ✓ → replaced by `board sprint land`
+Built: English-first CEO landing experience. `buildLandingBrief()` assembles structured briefing from DB, `renderLandingBrief()` formats agent summaries with status icons, test counts, runtime. Interactive loop: inspect agents, merge-all, per-agent merge. Replaced both `merge-sprint` and `sprint finish` commands.
+
+### ~~`board sprint` orchestrator~~ ✓ → CEO Console
+Built: `interactive.ts` rewritten as command-style CEO console. `board` launches a persistent REPL where `sprint <goal>` decomposes + spawns, `land` reviews + merges, `status`/`kill`/`steer`/`logs`/`feed`/`briefing` work inline. Background poller (10s) detects agent completion, notifies via readline clearLine. Auto-names sprints via `slugify()`. Shared `startSprint()` extracted to `sprint-orchestrator.ts` (DRY). `boardrc.ts` extracted for shared API/RC helpers. `initBoard()` extracted to `db.ts`.
+
+---
+
+## OODA Command Center Evolution — P2
+
+### Strategic chat assistant (P2)
+**What:** Persistent chat sidebar in the kanban UI where the user can discuss improvements with Claude while agents work. The assistant sees the current sprint state and can suggest plan changes.
+**Why:** The CEO should be able to evolve the plan while agents execute. Currently you need to leave the UI and go to the CLI.
+**Effort:** L
+**Depends on:** Nothing
+
+### Architecture node map (P2)
+**What:** Interactive node graph showing the project's file/module architecture with agent assignments overlaid. Zoom out to see the whole system, zoom in to see individual files.
+**Why:** The CEO needs a zoomed-out view of the codebase structure and which agents own which parts.
+**Effort:** L
+**Depends on:** Nothing
+
+### Multi-project command center (P3)
+**What:** Run multiple projects in one AgentBoard instance, each with its own kanban board, but shared agent pool and identity library.
+**Why:** Power users will want to manage multiple projects from one place.
+**Effort:** XL
+**Depends on:** Strategic chat assistant
+
 ---
 
 ## Sprint Loop — P1 (the critical path)
-
-### `board merge-sprint` (P1)
-**What:** Automated sequential merge of all agent branches with test gates between each merge. Calls validate-sprint internally as pre-flight, then merges in suggested order, runs `npm test` after each, stops and reports on first failure, posts results to #status channel.
-**Why:** The M2 merge required 4 manual merges with test gates and an import fix between merges. This should be a single command. `board merge` exists for individual agents but there's no automated multi-merge with test gates.
-**Context:** Uses existing `validate-sprint` for pre-flight + merge order. Uses existing `mergeAgent()` from spawner.ts for each merge. New logic: sequential loop with test gate between each. Supports `--dry-run` to preview. Posts summary to #status. If a merge fails tests, stops and reports which agent's merge broke things.
-**Effort:** M
-**Depends on:** validate-sprint (done), merge @agent (done)
-
-### `board sprint` orchestrator (P1)
-**What:** Single command that runs a full agent sprint: user provides goal + agent/identity/mission list, command handles spawn agents with identities, monitor via feed, detect completion, run validate-sprint, prompt to review diffs, run merge-sprint, generate retro.
-**Why:** This is the killer feature. `board sprint "Build feature X"` should be all a user needs. The M2 sprint proved the pattern — this codifies it.
-**Context:** Input format: YAML or CLI flags specifying agents with identities and missions. The command: (1) spawns all agents in parallel with identity injection, (2) enters monitoring mode (polls `board ps` + shows feed), (3) on all-done: runs validate-sprint, (4) prompts user to review diffs, (5) runs merge-sprint, (6) generates retro. Start simple: user provides the full agent list, defer automatic task decomposition.
-**Effort:** L
-**Depends on:** merge-sprint
 
 ### `board init` polish (P1)
 **What:** Enhance the existing `board init` with starter identities and clearer next-step messaging. Current init (cli.ts:110-167) already creates DB, admin agent, #general channel, admin key, .dag/ repo, .boardrc, and auto-starts server.

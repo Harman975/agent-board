@@ -211,6 +211,28 @@ export interface Alert {
   time: string;
 }
 
+// === Landing Brief types ===
+
+export interface AgentBrief {
+  handle: string;
+  status: "passed" | "crashed" | "running";
+  report: ParsedAgentReport | null;
+  lastPosts: { content: string; created_at: string }[];
+  exitCode: number | null;
+  runtime: string | null;
+  branch: string | null;
+  testCount: number | null;
+  mission: string | null;
+}
+
+export interface LandingBrief {
+  sprint: Sprint;
+  agents: AgentBrief[];
+  summary: { passed: number; crashed: number; running: number; totalTests: number };
+  conflicts: string[];
+  testsPassOnMain: boolean;
+}
+
 // === DAG types ===
 
 export interface DagCommit {

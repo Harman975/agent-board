@@ -1863,3 +1863,137 @@ describe("Steer --clear resets directives in CLAUDE.md", () => {
     assert.ok(content.includes("No active directives."));
   });
 });
+
+// ============================================================
+// Section: CEO Console — pure function tests
+// ============================================================
+
+import { slugify, uniqueSprintName, validateDisjointScopes, type AgentSpec } from "./sprint-orchestrator.js";
+import { parseCommand } from "./interactive.js";
+
+describe("slugify", () => {
+  it("converts basic goal to slug", () => {
+    assert.equal(slugify("add rate limiting"), "add-rate-limiting");
+  });
+
+  it("handles special characters", () => {
+    assert.equal(slugify("Fix bug #123!"), "fix-bug-123");
+  });
+
+  it("truncates at 40 chars", () => {
+    const long = "this is a very long goal description that should be truncated";
+    assert.ok(slugify(long).length <= 40);
+  });
+
+  it("strips leading/trailing hyphens", () => {
+    assert.equal(slugify("  --hello world--  "), "hello-world");
+  });
+
+  it("handles empty-ish input", () => {
+    assert.equal(slugify("!!!"), "");
+  });
+});
+
+describe("uniqueSprintName", () => {
+  let db: Database.Database;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "board-test-"));
+    db = initDb(tmpDir);
+  });
+
+  afterEach(() => {
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns base slug when no collision", () => {
+    assert.equal(uniqueSprintName("add tests", db), "add-tests");
+  });
+
+  it("appends -2 on collision", () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("add-tests", "add tests");
+    assert.equal(uniqueSprintName("add tests", db), "add-tests-2");
+  });
+
+  it("appends -3 when -2 also exists", () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("add-tests", "g");
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("add-tests-2", "g");
+    assert.equal(uniqueSprintName("add tests", db), "add-tests-3");
+  });
+
+  it("falls back to timestamp name for empty slug", () => {
+    const name = uniqueSprintName("!!!", db);
+    assert.ok(name.startsWith("sprint-"));
+  });
+});
+
+describe("validateDisjointScopes", () => {
+  it("passes for non-overlapping scopes", () => {
+    const specs: AgentSpec[] = [
+      { handle: "@a", mission: "m", scope: ["src/a.ts"] },
+      { handle: "@b", mission: "m", scope: ["src/b.ts"] },
+    ];
+    assert.doesNotThrow(() => validateDisjointScopes(specs));
+  });
+
+  it("throws on overlapping scopes", () => {
+    const specs: AgentSpec[] = [
+      { handle: "@a", mission: "m", scope: ["src/shared.ts"] },
+      { handle: "@b", mission: "m", scope: ["src/shared.ts"] },
+    ];
+    assert.throws(() => validateDisjointScopes(specs), /Scope overlap/);
+  });
+
+  it("passes when no scopes defined", () => {
+    const specs: AgentSpec[] = [
+      { handle: "@a", mission: "m" },
+      { handle: "@b", mission: "m" },
+    ];
+    assert.doesNotThrow(() => validateDisjointScopes(specs));
+  });
+});
+
+describe("parseCommand", () => {
+  it("parses sprint with goal", () => {
+    const { cmd, args } = parseCommand("sprint add rate limiting");
+    assert.equal(cmd, "sprint");
+    assert.equal(args, "add rate limiting");
+  });
+
+  it("parses land with name", () => {
+    const { cmd, args } = parseCommand("land my-sprint");
+    assert.equal(cmd, "land");
+    assert.equal(args, "my-sprint");
+  });
+
+  it("parses land with no args", () => {
+    const { cmd, args } = parseCommand("land");
+    assert.equal(cmd, "land");
+    assert.equal(args, "");
+  });
+
+  it("parses kill with handle", () => {
+    const { cmd, args } = parseCommand("kill @agent-x");
+    assert.equal(cmd, "kill");
+    assert.equal(args, "@agent-x");
+  });
+
+  it("handles single word commands", () => {
+    const { cmd, args } = parseCommand("feed");
+    assert.equal(cmd, "feed");
+    assert.equal(args, "");
+  });
+
+  it("normalizes to lowercase", () => {
+    const { cmd } = parseCommand("SPRINT goal");
+    assert.equal(cmd, "sprint");
+  });
+
+  it("handles extra whitespace", () => {
+    const { cmd, args } = parseCommand("  sprint   add tests  ");
+    assert.equal(cmd, "sprint");
+    assert.equal(args, "add tests");
+  });
+});

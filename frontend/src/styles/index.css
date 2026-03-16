@@ -310,3 +310,70 @@ body {
   font-size: 0.8rem;
   color: var(--blocked);
 }
+
+/* Action buttons */
+.tile-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.action-btn {
+  font-size: 0.75rem;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+
+.action-btn:hover {
+  border-color: var(--text-muted);
+}
+
+.kill-btn {
+  color: var(--blocked);
+  border-color: var(--blocked);
+}
+
+.kill-btn:hover {
+  background: var(--blocked);
+  color: var(--bg);
+}
+
+.steer-btn {
+  color: var(--in-progress);
+  border-color: var(--in-progress);
+}
+
+.send-btn {
+  color: var(--done);
+  border-color: var(--done);
+}
+
+.steer-form {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.steer-form input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  outline: none;
+}
+
+.steer-form input:focus {
+  border-color: var(--in-progress);
+}

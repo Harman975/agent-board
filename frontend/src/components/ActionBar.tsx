@@ -44,9 +44,15 @@ export const ActionBar: React.FC<ActionBarProps> = ({ sprint, connected }) => {
 
   const handleMerge = async () => {
     try {
-      await fetch('/api/sprint/merge', { method: 'POST' });
+      const res = await fetch(`/data/sprint/${sprint.name}/merge`, { method: 'POST' });
+      if (res.ok) {
+        const result = await res.json();
+        if (result.allDone) {
+          alert(`Sprint complete! ${result.results.length} branches merged.`);
+        }
+      }
     } catch {
-      // merge failed silently
+      // merge failed
     }
   };
 
