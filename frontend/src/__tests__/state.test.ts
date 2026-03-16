@@ -89,4 +89,12 @@ describe('applyWSEvent', () => {
     };
     expect(applyWSEvent(baseSprint, event)).toBe(baseSprint);
   });
+
+  it('returns state unchanged for log_line events', () => {
+    const event: WSEvent = {
+      type: 'log_line',
+      data: { handle: '@agent1', line: 'some log output' },
+    };
+    expect(applyWSEvent(baseSprint, event)).toBe(baseSprint);
+  });
 });
