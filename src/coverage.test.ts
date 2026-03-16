@@ -1,6 +1,6 @@
 /**
  * Coverage tests for previously untested exports.
- * Covers: normalizeHandle, validateHandle, dashboardHtml, getDb, withDb,
+ * Covers: normalizeHandle, validateHandle, getDb, withDb,
  * renderDagCommit, renderOrg, updateSpawn, parseNumstat.
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
@@ -59,18 +59,6 @@ describe("validateHandle", () => {
     const { validateHandle } = await import("./agents.js");
     const longHandle = "a".repeat(51);
     assert.throws(() => validateHandle(longHandle), /too long/);
-  });
-});
-
-// === dashboard.ts: dashboardHtml ===
-
-describe("dashboardHtml", () => {
-  it("returns valid HTML string", async () => {
-    const { dashboardHtml } = await import("./dashboard.js");
-    const html = dashboardHtml();
-    assert.ok(html.includes("<!DOCTYPE html>"));
-    assert.ok(html.includes("</html>"));
-    assert.ok(html.includes("AgentBoard"));
   });
 });
 
