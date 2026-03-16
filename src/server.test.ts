@@ -6,6 +6,7 @@ import { generateKey, hashKey } from "./auth.js";
 import { resetRateLimits } from "./ratelimit.js";
 import type Database from "better-sqlite3";
 import type { Hono } from "hono";
+import type { Sprint, SprintAgent } from "./types.js";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -933,5 +934,231 @@ describe("GET /api/feed edge cases", () => {
     const res = await req("GET", "/api/feed?limit=2", { key: adminKey });
     const data = await res.json();
     assert.equal(data.length, 2);
+  });
+});
+
+// === GET /data/logs/:handle ===
+
+describe("GET /data/logs/:handle", () => {
+  it("returns last N lines of agent log", async () => {
+    // Create agent and spawn record with a log file
+    db.prepare("INSERT INTO agents (handle, name, mission) VALUES (?, ?, ?)").run(
+      "@logger", "Logger", "logging"
+    );
+    const logPath = path.join(tmpDir, "agent-log.txt");
+    fs.writeFileSync(logPath, "line1\nline2\nline3\nline4\nline5\n");
+
+    db.prepare(
+      "INSERT INTO spawns (agent_handle, pid, log_path, branch, started_at) VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))"
+    ).run("@logger", 99999, logPath, "agent/logger");
+
+    const res = await req("GET", "/data/logs/%40logger?lines=4");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.handle, "@logger");
+    // File has trailing newline, so last 4 entries include: line4, line5, empty
+    assert.ok(data.log.includes("line4"));
+    assert.ok(data.log.includes("line5"));
+  });
+
+  it("returns 404 for unknown handle", async () => {
+    const res = await req("GET", "/data/logs/%40ghost");
+    assert.equal(res.status, 404);
+  });
+
+  it("returns 404 when spawn has no log file", async () => {
+    db.prepare("INSERT INTO agents (handle, name, mission) VALUES (?, ?, ?)").run(
+      "@nolog", "NoLog", "no log"
+    );
+    db.prepare(
+      "INSERT INTO spawns (agent_handle, pid, log_path, branch, started_at) VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))"
+    ).run("@nolog", 99998, null, "agent/nolog");
+
+    const res = await req("GET", "/data/logs/%40nolog");
+    assert.equal(res.status, 404);
+  });
+
+  it("defaults to 50 lines", async () => {
+    db.prepare("INSERT INTO agents (handle, name, mission) VALUES (?, ?, ?)").run(
+      "@biglog", "BigLog", "big log"
+    );
+    const logPath = path.join(tmpDir, "big-log.txt");
+    const lines = Array.from({ length: 100 }, (_, i) => `line${i + 1}`).join("\n");
+    fs.writeFileSync(logPath, lines);
+
+    db.prepare(
+      "INSERT INTO spawns (agent_handle, pid, log_path, branch, started_at) VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))"
+    ).run("@biglog", 99997, logPath, "agent/biglog");
+
+    const res = await req("GET", "/data/logs/%40biglog");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    // Should contain last 50 lines (line51 through line100)
+    assert.ok(data.log.includes("line51"));
+    assert.ok(data.log.includes("line100"));
+    assert.ok(!data.log.includes("line50\n"));
+  });
+});
+
+// === GET /data/sprint/:name/state ===
+
+describe("GET /data/sprint/:name/state", () => {
+  it("returns sprint state with agent info", async () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("test-sprint", "Build feature");
+    db.prepare("INSERT INTO agents (handle, name, mission) VALUES (?, ?, ?)").run(
+      "@worker1", "Worker1", "task 1"
+    );
+    db.prepare(
+      "INSERT INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)"
+    ).run("test-sprint", "@worker1", "coder", "task 1");
+
+    // No spawn record — agent should show as stopped with zero stats
+    const res = await req("GET", "/data/sprint/test-sprint/state");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.sprint.name, "test-sprint");
+    assert.equal(data.sprint.goal, "Build feature");
+    assert.equal(data.agents.length, 1);
+    assert.equal(data.agents[0].handle, "@worker1");
+    assert.equal(data.agents[0].stopped, true);
+    assert.equal(data.agents[0].additions, 0);
+    assert.equal(data.totals.additions, 0);
+  });
+
+  it("returns 404 for nonexistent sprint", async () => {
+    const res = await req("GET", "/data/sprint/nope/state");
+    assert.equal(res.status, 404);
+  });
+});
+
+// === GET /data/sprint/:name/brief ===
+
+describe("GET /data/sprint/:name/brief", () => {
+  it("returns brief with agents and escalation count", async () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("brief-sprint", "Test brief");
+    db.prepare("INSERT INTO agents (handle, name, mission) VALUES (?, ?, ?)").run(
+      "@b1", "B1", "brief work"
+    );
+    db.prepare(
+      "INSERT INTO sprint_agents (sprint_name, agent_handle, mission) VALUES (?, ?, ?)"
+    ).run("brief-sprint", "@b1", "brief work");
+
+    // Create an escalation post
+    db.prepare("INSERT INTO channels (name, description) VALUES (?, ?)").run(
+      "#escalations", "Escalations"
+    );
+    db.prepare(
+      "INSERT INTO posts (id, author, channel, content, created_at) VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))"
+    ).run("esc-1", "@b1", "#escalations", "BLOCKED: need help");
+
+    const res = await req("GET", "/data/sprint/brief-sprint/brief");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.sprint.name, "brief-sprint");
+    assert.equal(data.agents.length, 1);
+    assert.equal(data.agents[0].handle, "@b1");
+    assert.equal(data.escalations, 1);
+  });
+
+  it("returns 404 for nonexistent sprint", async () => {
+    const res = await req("GET", "/data/sprint/nope/brief");
+    assert.equal(res.status, 404);
+  });
+
+  it("includes lastPost for agents", async () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("post-sprint", "Test posts");
+    db.prepare("INSERT INTO agents (handle, name, mission) VALUES (?, ?, ?)").run(
+      "@poster", "Poster", "post work"
+    );
+    db.prepare(
+      "INSERT INTO sprint_agents (sprint_name, agent_handle, mission) VALUES (?, ?, ?)"
+    ).run("post-sprint", "@poster", "post work");
+
+    // Create a post from the agent
+    db.prepare(
+      "INSERT INTO posts (id, author, channel, content, created_at) VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))"
+    ).run("p-1", "@poster", "#general", "Just finished task A");
+
+    const res = await req("GET", "/data/sprint/post-sprint/brief");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.agents[0].lastPost, "Just finished task A");
+  });
+});
+
+// === POST /data/sprint/suggest ===
+
+describe("POST /data/sprint/suggest", () => {
+  it("returns 400 when goal is missing", async () => {
+    const res = await req("POST", "/data/sprint/suggest", { body: {} });
+    assert.equal(res.status, 400);
+    const data = await res.json();
+    assert.ok(data.error.includes("goal"));
+  });
+
+  it("returns 400 when goal is not a string", async () => {
+    const res = await req("POST", "/data/sprint/suggest", { body: { goal: 123 } });
+    assert.equal(res.status, 400);
+  });
+
+  // Note: testing actual decompose() would require Claude API access,
+  // so we only test input validation here. Integration tests would mock the executor.
+});
+
+// === POST /data/sprint/start ===
+
+describe("POST /data/sprint/start", () => {
+  it("returns 400 when goal is missing", async () => {
+    const res = await req("POST", "/data/sprint/start", {
+      body: { tasks: [{ handle: "@x", mission: "test" }] },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("returns 400 when tasks is empty", async () => {
+    const res = await req("POST", "/data/sprint/start", {
+      body: { goal: "test", tasks: [] },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("returns 400 when tasks is missing", async () => {
+    const res = await req("POST", "/data/sprint/start", {
+      body: { goal: "test" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("returns 409 for duplicate sprint name", async () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("taken", "Already taken");
+
+    const res = await req("POST", "/data/sprint/start", {
+      body: { goal: "test", name: "taken", tasks: [{ handle: "@x", mission: "test" }] },
+    });
+    assert.equal(res.status, 409);
+  });
+
+  // Note: testing actual agent spawning requires a full environment,
+  // so we only test input validation and duplicate checks here.
+});
+
+// === Numstat cache ===
+
+describe("numstat cache behavior", () => {
+  it("sprint state returns zero stats when no spawns exist", async () => {
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run("cache-sprint", "Cache test");
+    db.prepare("INSERT INTO agents (handle, name, mission) VALUES (?, ?, ?)").run(
+      "@cache-agent", "CacheAgent", "cache work"
+    );
+    db.prepare(
+      "INSERT INTO sprint_agents (sprint_name, agent_handle, mission) VALUES (?, ?, ?)"
+    ).run("cache-sprint", "@cache-agent", "cache work");
+
+    const res = await req("GET", "/data/sprint/cache-sprint/state");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.totals.additions, 0);
+    assert.equal(data.totals.deletions, 0);
+    assert.equal(data.totals.filesChanged, 0);
   });
 });

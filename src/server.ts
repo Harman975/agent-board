@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { validateKey, isAdminKey, generateKey, storeKey } from "./auth.js";
 import { checkRateLimit } from "./ratelimit.js";
-import { createAgent, getAgent, listAgents, updateAgent } from "./agents.js";
+import { createAgent, getAgent, listAgents, updateAgent, normalizeHandle } from "./agents.js";
 import { createChannel, getChannel, listChannels } from "./channels.js";
 import { createPost, getPost, listPosts, getThread } from "./posts.js";
 import { linkCommit } from "./commits.js";
@@ -10,7 +10,11 @@ import { getFeed, getBriefing, setChannelPriority, listChannelPriorities } from 
 import { pushBundle, fetchBundle, listDagCommits, getLeaves, getChildren, diffCommits, promoteCommit, dagExists, getDagSummary } from "./gitdag.js";
 import { createTeam, getTeam, listTeams, addMember, removeMember, updateTeam } from "./teams.js";
 import { createRoute, listRoutes, updateRoute } from "./routes.js";
-import type { ApiKey } from "./types.js";
+import { parseNumstat, type NumstatResult, SPRINT_REPORT_PROTOCOL } from "./sprint-orchestrator.js";
+import { getSpawn, spawnAgent, listSpawns, isProcessAlive } from "./spawner.js";
+import { decompose } from "./decomposer.js";
+import { loadIdentity } from "./identities.js";
+import type { ApiKey, Sprint, SprintAgent } from "./types.js";
 import { dashboardHtml } from "./dashboard.js";
 import fs from "fs";
 import path from "path";
@@ -549,5 +553,360 @@ export function createApp(db: Database.Database, projectDir?: string): Hono<{ Va
     return c.json(summary);
   });
 
+  // === Numstat cache (invalidated on bucket_changed / spawn_stopped) ===
+
+  const numstatCache = new Map<string, NumstatResult>();
+
+  /**
+   * Invalidate the numstat cache for a specific branch or all branches.
+   * Called when bucket_changed or spawn_stopped events occur.
+   */
+  function invalidateNumstatCache(branch?: string) {
+    if (branch) {
+      numstatCache.delete(branch);
+    } else {
+      numstatCache.clear();
+    }
+  }
+
+  function getCachedNumstat(branch: string): NumstatResult | null {
+    const cached = numstatCache.get(branch);
+    if (cached) return cached;
+    const result = parseNumstat(resolvedProjectDir, branch);
+    if (result) numstatCache.set(branch, result);
+    return result;
+  }
+
+  /**
+   * Build sprint state with real diff stats from parseNumstat.
+   */
+  function buildSprintState(sprintName: string) {
+    const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as Sprint | undefined;
+    if (!sprint) return null;
+
+    const sprintAgents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(sprintName) as SprintAgent[];
+    const spawns = listSpawns(db);
+
+    const agents = sprintAgents.map((sa) => {
+      const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
+      const alive = spawn && !spawn.stopped_at ? isProcessAlive(spawn.pid) : false;
+      const stats = spawn?.branch ? getCachedNumstat(spawn.branch) : null;
+
+      return {
+        handle: sa.agent_handle,
+        branch: spawn?.branch || null,
+        alive,
+        stopped: spawn ? !!spawn.stopped_at || !alive : true,
+        exitCode: spawn?.exit_code ?? null,
+        additions: stats?.additions ?? 0,
+        deletions: stats?.deletions ?? 0,
+        filesChanged: stats?.filesChanged ?? 0,
+        mission: sa.mission,
+        identity: sa.identity_name,
+      };
+    });
+
+    const totals = agents.reduce(
+      (acc, a) => ({
+        additions: acc.additions + a.additions,
+        deletions: acc.deletions + a.deletions,
+        filesChanged: acc.filesChanged + a.filesChanged,
+      }),
+      { additions: 0, deletions: 0, filesChanged: 0 }
+    );
+
+    return { sprint, agents, totals };
+  }
+
+  // === GET /data/sprint/:name/state — full sprint state with diff stats ===
+
+  app.get("/data/sprint/:name/state", (c) => {
+    const state = buildSprintState(c.req.param("name"));
+    if (!state) return c.json({ error: "Sprint not found" }, 404);
+    return c.json(state);
+  });
+
+  // === GET /data/logs/:handle — read last N lines of agent log ===
+
+  app.get("/data/logs/:handle", (c) => {
+    const handle = c.req.param("handle");
+    const lines = parseInt(c.req.query("lines") ?? "50", 10);
+    const spawn = getSpawn(db, handle);
+    if (!spawn || !spawn.log_path) {
+      return c.json({ error: "No spawn or log file found" }, 404);
+    }
+
+    try {
+      const content = fs.readFileSync(spawn.log_path, "utf-8");
+      const allLines = content.split("\n");
+      const lastLines = allLines.slice(-lines).join("\n");
+      return c.json({ handle, log: lastLines });
+    } catch {
+      return c.json({ error: "Log file not found" }, 404);
+    }
+  });
+
+  // === GET /data/sprint/:name/brief — landing brief for a sprint ===
+
+  app.get("/data/sprint/:name/brief", (c) => {
+    const sprintName = c.req.param("name");
+    const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as Sprint | undefined;
+    if (!sprint) return c.json({ error: "Sprint not found" }, 404);
+
+    const sprintAgents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(sprintName) as SprintAgent[];
+    const spawns = listSpawns(db);
+
+    const agents = sprintAgents.map((sa) => {
+      const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
+      const alive = spawn && !spawn.stopped_at ? isProcessAlive(spawn.pid) : false;
+      const stats = spawn?.branch ? getCachedNumstat(spawn.branch) : null;
+
+      // Get last post for this agent
+      const lastPost = db.prepare(
+        "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 1"
+      ).get(sa.agent_handle) as { content: string } | undefined;
+
+      return {
+        handle: sa.agent_handle,
+        identity: sa.identity_name,
+        mission: sa.mission,
+        branch: spawn?.branch || null,
+        alive,
+        stopped: spawn ? !!spawn.stopped_at || !alive : true,
+        exitCode: spawn?.exit_code ?? null,
+        additions: stats?.additions ?? 0,
+        deletions: stats?.deletions ?? 0,
+        filesChanged: stats?.filesChanged ?? 0,
+        lastPost: lastPost?.content || null,
+      };
+    });
+
+    const escalationCount = (db.prepare(
+      "SELECT COUNT(*) as count FROM posts WHERE channel = '#escalations' AND created_at >= ?"
+    ).get(sprint.created_at) as { count: number }).count;
+
+    return c.json({
+      sprint,
+      agents,
+      escalations: escalationCount,
+    });
+  });
+
+  // === POST /data/sprint/suggest — decompose a goal into agent tasks ===
+
+  app.post("/data/sprint/suggest", async (c) => {
+    const body = await c.req.json();
+    if (!body.goal || typeof body.goal !== "string") {
+      return c.json({ error: "goal (string) is required" }, 400);
+    }
+    try {
+      const result = await decompose(body.goal, resolvedProjectDir);
+      return c.json(result);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
+    }
+  });
+
+  // === POST /data/sprint/start — start a sprint with agents ===
+
+  app.post("/data/sprint/start", async (c) => {
+    const body = await c.req.json();
+    if (!body.goal || !Array.isArray(body.tasks) || body.tasks.length === 0) {
+      return c.json({ error: "goal and non-empty tasks array are required" }, 400);
+    }
+
+    // Generate sprint name if not provided
+    const sprintName = body.name || uniqueSprintName();
+
+    // Check for duplicate sprint name
+    const existing = db.prepare("SELECT name FROM sprints WHERE name = ?").get(sprintName);
+    if (existing) {
+      return c.json({ error: `Sprint "${sprintName}" already exists` }, 409);
+    }
+
+    // Create sprint record
+    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run(sprintName, body.goal);
+
+    const agents: { handle: string; pid: number; branch: string }[] = [];
+    const spawned: string[] = [];
+
+    try {
+      for (const spec of body.tasks) {
+        const handle = normalizeHandle(spec.handle);
+
+        // Create agent if it doesn't exist
+        if (!getAgent(db, handle)) {
+          createAgent(db, {
+            handle: handle.slice(1),
+            name: handle.slice(1),
+            role: "worker",
+            mission: spec.mission,
+          });
+        }
+
+        let mission = spec.mission;
+
+        // Load and inject identity with report protocol if specified
+        let identity = undefined;
+        if (spec.identity) {
+          try {
+            identity = loadIdentity(spec.identity, resolvedProjectDir);
+            identity = { ...identity, content: identity.content + SPRINT_REPORT_PROTOCOL };
+          } catch {
+            // Identity not found — proceed without it
+          }
+        }
+
+        const apiKey = generateKey();
+        storeKey(db, apiKey, handle);
+
+        // Determine server URL from environment or default
+        const serverUrl = process.env.BOARD_URL || "http://localhost:3141";
+
+        const result = spawnAgent(db, {
+          handle,
+          mission,
+          apiKey,
+          serverUrl,
+          projectDir: resolvedProjectDir,
+          identity,
+          scope: spec.scope,
+        });
+
+        // Record in sprint_agents
+        db.prepare(
+          "INSERT INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)"
+        ).run(sprintName, handle, spec.identity || null, spec.mission);
+
+        spawned.push(handle);
+        agents.push({ handle, pid: result.pid, branch: result.branch });
+      }
+
+      return c.json({ sprintName, agents }, 201);
+    } catch (e: any) {
+      // Atomic rollback — kill all already-spawned agents
+      const { killAgent } = await import("./spawner.js");
+      for (const h of spawned) {
+        try { killAgent(db, h, resolvedProjectDir); } catch { /* best effort */ }
+      }
+      db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(sprintName);
+      return c.json({ error: e.message }, 500);
+    }
+  });
+
   return app;
+}
+
+// === Helpers ===
+
+/** Generate a unique sprint name based on date + counter. */
+function uniqueSprintName(): string {
+  const date = new Date();
+  const base = `sprint-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
+  return `${base}-${Date.now().toString(36).slice(-4)}`;
+}
+
+// === WebSocket log streaming types ===
+
+export interface LogSubscription {
+  handle: string;
+  logPath: string;
+  watcher: fs.FSWatcher;
+  offset: number;
+}
+
+export interface WsClient {
+  ws: WebSocket;
+  subscriptions: Map<string, LogSubscription>;
+}
+
+/**
+ * Attach WebSocket log streaming to a Node.js HTTP server.
+ * Call this after creating the HTTP server (e.g., from @hono/node-server).
+ *
+ * Clients send JSON messages:
+ *   { subscribe_logs: "@handle" }   — start streaming log lines
+ *   { unsubscribe_logs: "@handle" } — stop streaming
+ *
+ * Server sends:
+ *   { type: "log_line", handle: "@handle", line: "..." }
+ */
+export function attachLogStreaming(
+  server: import("http").Server,
+  db: import("better-sqlite3").Database,
+): void {
+  const { WebSocketServer } = require("ws") as typeof import("ws");
+  const wss = new WebSocketServer({ server });
+  const clients = new Set<WsClient>();
+
+  wss.on("connection", (ws: WebSocket) => {
+    const client: WsClient = { ws, subscriptions: new Map() };
+    clients.add(client);
+
+    ws.addEventListener("message", (event: MessageEvent) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(typeof event.data === "string" ? event.data : event.data.toString());
+      } catch {
+        return; // Ignore malformed messages
+      }
+
+      if (msg.subscribe_logs) {
+        const handle = msg.subscribe_logs;
+        // Don't double-subscribe
+        if (client.subscriptions.has(handle)) return;
+
+        const spawn = getSpawn(db, handle);
+        if (!spawn?.log_path || !fs.existsSync(spawn.log_path)) return;
+
+        const logPath = spawn.log_path;
+        // Start from end of file
+        let offset = 0;
+        try {
+          const stat = fs.statSync(logPath);
+          offset = stat.size;
+        } catch { /* start from 0 */ }
+
+        const watcher = fs.watch(logPath, () => {
+          try {
+            const stat = fs.statSync(logPath);
+            if (stat.size <= offset) return;
+
+            const fd = fs.openSync(logPath, "r");
+            const buf = Buffer.alloc(stat.size - offset);
+            fs.readSync(fd, buf, 0, buf.length, offset);
+            fs.closeSync(fd);
+            offset = stat.size;
+
+            const newContent = buf.toString("utf-8");
+            for (const line of newContent.split("\n")) {
+              if (line) {
+                ws.send(JSON.stringify({ type: "log_line", handle, line }));
+              }
+            }
+          } catch {
+            // File may have been rotated or deleted
+          }
+        });
+
+        client.subscriptions.set(handle, { handle, logPath, watcher, offset });
+      }
+
+      if (msg.unsubscribe_logs) {
+        const sub = client.subscriptions.get(msg.unsubscribe_logs);
+        if (sub) {
+          sub.watcher.close();
+          client.subscriptions.delete(msg.unsubscribe_logs);
+        }
+      }
+    });
+
+    ws.addEventListener("close", () => {
+      client.subscriptions.forEach((sub) => {
+        sub.watcher.close();
+      });
+      client.subscriptions.clear();
+      clients.delete(client);
+    });
+  });
 }
