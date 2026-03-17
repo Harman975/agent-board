@@ -153,8 +153,6 @@ This report will be shown to the CEO in the sprint finish view.
 
 // === Runtime formatting ===
 
-const formatRuntime = formatDuration;
-
 function countTests(testsStr: string | null): number | null {
   if (!testsStr) return null;
   const numbers = testsStr.match(/\d+/g);
@@ -219,7 +217,7 @@ export async function buildLandingBrief(
     }
 
     const runtime = spawn?.started_at
-      ? formatRuntime(spawn.started_at, spawn.stopped_at)
+      ? formatDuration(spawn.started_at, spawn.stopped_at)
       : null;
 
     const testCount = countTests(report?.tests ?? null);
