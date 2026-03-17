@@ -78,7 +78,29 @@ export interface WSEvent {
   data: Record<string, unknown>;
 }
 
-export type TabId = 'kanban' | 'feed' | 'logs';
+export type TabId = 'kanban' | 'feed' | 'logs' | 'architecture';
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface ImportGraphNode {
+  id: string;
+  file: string;
+  size: number;
+  agent?: string;
+}
+
+export interface ImportGraphEdge {
+  source: string;
+  target: string;
+}
+
+export interface ImportGraphData {
+  nodes: ImportGraphNode[];
+  edges: ImportGraphEdge[];
+}
 
 export function applyWSEvent(
   state: SprintState | null,

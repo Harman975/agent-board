@@ -4,6 +4,8 @@ import { SprintState, BucketState } from '../types';
 interface ActionBarProps {
   sprint: SprintState | null;
   connected: boolean;
+  onToggleChat: () => void;
+  chatOpen: boolean;
 }
 
 function elapsed(createdAt: string): string {
@@ -31,7 +33,7 @@ function countByBucket(
   return counts;
 }
 
-export const ActionBar: React.FC<ActionBarProps> = ({ sprint, connected }) => {
+export const ActionBar: React.FC<ActionBarProps> = ({ sprint, connected, onToggleChat, chatOpen }) => {
   if (!sprint) {
     return (
       <header className="action-bar">
@@ -76,6 +78,13 @@ export const ActionBar: React.FC<ActionBarProps> = ({ sprint, connected }) => {
         </span>
         <button className="merge-button" onClick={handleMerge}>
           Merge Sprint
+        </button>
+        <button
+          className={`chat-toggle-btn ${chatOpen ? 'active' : ''}`}
+          onClick={onToggleChat}
+          aria-label="Toggle chat"
+        >
+          Chat
         </button>
       </div>
     </header>

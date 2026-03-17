@@ -10,6 +10,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'kanban', label: 'Kanban' },
   { id: 'feed', label: 'Feed' },
   { id: 'logs', label: 'Logs' },
+  { id: 'architecture', label: 'Architecture' },
 ];
 
 export const TabBar: React.FC<TabBarProps> = ({ activeTab, onTabChange }) => {
