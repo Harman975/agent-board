@@ -12,9 +12,10 @@ import { createTeam, getTeam, listTeams, addMember, removeMember, updateTeam } f
 import { createRoute, listRoutes, updateRoute } from "./routes.js";
 import { parseNumstat, type NumstatResult, startSprint, uniqueSprintName, type AgentSpec } from "./sprint-orchestrator.js";
 import { getSpawn, listSpawns, isProcessAlive, killAgent, mergeAgent, writeDirective } from "./spawner.js";
-import { decompose } from "./decomposer.js";
+import { decompose, analyzeImports } from "./decomposer.js";
 import type { ApiKey, Sprint, SprintAgent } from "./types.js";
 import { BoardEventEmitter, inferAllBuckets, inferBucket } from "./bucket-engine.js";
+import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -24,7 +25,12 @@ type Variables = {
   apiKey: ApiKey;
 };
 
-export function createApp(db: Database.Database, projectDir?: string, emitter?: BoardEventEmitter): Hono<{ Variables: Variables }> {
+export interface ChatDeps {
+  anthropic?: Anthropic;
+  wsBroadcast?: (msg: string) => void;
+}
+
+export function createApp(db: Database.Database, projectDir?: string, emitter?: BoardEventEmitter, chatDeps?: ChatDeps): Hono<{ Variables: Variables }> {
   const app = new Hono<{ Variables: Variables }>();
   const resolvedProjectDir = projectDir ?? process.cwd();
 
@@ -828,6 +834,117 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
     } catch (e: any) {
       return c.json({ error: e.message }, e.message.includes("already exists") ? 409 : 500);
     }
+  });
+
+  // === POST /api/chat — Claude API proxy with WebSocket streaming ===
+
+  app.post("/api/chat", async (c) => {
+    const apiKeyEnv = process.env.ANTHROPIC_API_KEY;
+    if (!apiKeyEnv) {
+      return c.json({ error: "ANTHROPIC_API_KEY environment variable is not set" }, 500);
+    }
+
+    const body = await c.req.json().catch(() => null);
+    if (!body || !Array.isArray(body.messages) || body.messages.length === 0) {
+      return c.json({ error: "messages array is required" }, 400);
+    }
+
+    // Build system prompt with board context
+    const runningSprint = db.prepare(
+      "SELECT * FROM sprints WHERE status = 'running' ORDER BY created_at DESC LIMIT 1"
+    ).get() as Sprint | undefined;
+
+    const agents = listAgents(db, {});
+    let systemPrompt = "You are a helpful assistant for the AgentBoard sprint management system.\n\n";
+    systemPrompt += `Current agents: ${agents.map(a => `${a.handle} (${a.mission})`).join(", ") || "none"}\n`;
+    if (runningSprint) {
+      systemPrompt += `Current sprint: "${runningSprint.name}" — goal: ${runningSprint.goal}\n`;
+    } else {
+      systemPrompt += "No sprint is currently running.\n";
+    }
+    if (body.context) {
+      systemPrompt += `\nAdditional context: ${body.context}\n`;
+    }
+
+    const client = chatDeps?.anthropic ?? new Anthropic({ apiKey: apiKeyEnv });
+    const broadcast = chatDeps?.wsBroadcast;
+
+    try {
+      const stream = client.messages.stream({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        system: systemPrompt,
+        messages: body.messages,
+      });
+
+      let fullText = "";
+
+      stream.on("text", (text) => {
+        fullText += text;
+        if (broadcast) {
+          broadcast(JSON.stringify({ type: "chat-token", token: text }));
+        }
+      });
+
+      const finalMessage = await stream.finalMessage();
+
+      if (broadcast) {
+        broadcast(JSON.stringify({ type: "chat-done" }));
+      }
+
+      return c.json({
+        content: fullText,
+        usage: finalMessage.usage,
+      });
+    } catch (err: any) {
+      if (err?.status === 429) {
+        return c.json({ error: "Rate limit exceeded from Anthropic API" }, 429);
+      }
+      if (err?.error?.type === "timeout" || err?.code === "ETIMEDOUT") {
+        return c.json({ error: "Request to Anthropic API timed out" }, 504);
+      }
+      return c.json({ error: err.message ?? "Unknown error from Anthropic API" }, 500);
+    }
+  });
+
+  // === GET /data/import-graph — Export codebase import graph as JSON ===
+
+  let importGraphCache: { data: unknown; timestamp: number } | null = null;
+  const IMPORT_GRAPH_CACHE_TTL = 30_000; // 30 seconds
+
+  app.get("/data/import-graph", (c) => {
+    const now = Date.now();
+    if (importGraphCache && (now - importGraphCache.timestamp) < IMPORT_GRAPH_CACHE_TTL) {
+      return c.json(importGraphCache.data);
+    }
+
+    const importMap = analyzeImports(resolvedProjectDir);
+    const nodeSet = new Set<string>();
+    const edges: { source: string; target: string }[] = [];
+
+    for (const [file, deps] of importMap) {
+      nodeSet.add(file);
+      for (const dep of deps) {
+        nodeSet.add(dep);
+        edges.push({ source: file, target: dep });
+      }
+    }
+
+    const nodes = [...nodeSet].map((filepath) => {
+      let lineCount = 0;
+      try {
+        const absPath = path.join(resolvedProjectDir, filepath);
+        const content = fs.readFileSync(absPath, "utf-8");
+        lineCount = content.split("\n").length;
+      } catch {
+        // file might not exist or be unreadable
+      }
+      return { id: filepath, size: lineCount };
+    });
+
+    const result = { nodes, edges };
+    importGraphCache = { data: result, timestamp: now };
+    return c.json(result);
   });
 
   // === Static frontend serving ===

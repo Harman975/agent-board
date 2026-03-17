@@ -1,12 +1,13 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
 import { initDb } from "./db.js";
-import { createApp } from "./server.js";
+import { createApp, type ChatDeps } from "./server.js";
 import { generateKey, hashKey } from "./auth.js";
 import { resetRateLimits } from "./ratelimit.js";
 import type Database from "better-sqlite3";
 import type { Hono } from "hono";
 import type { Sprint, SprintAgent } from "./types.js";
+import { EventEmitter } from "events";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -1328,5 +1329,229 @@ describe("numstat cache behavior", () => {
     assert.equal(data.totals.additions, 0);
     assert.equal(data.totals.deletions, 0);
     assert.equal(data.totals.filesChanged, 0);
+  });
+});
+
+// === POST /api/chat ===
+
+describe("POST /api/chat", () => {
+  it("returns 500 when ANTHROPIC_API_KEY is not set", async () => {
+    const origKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const res = await req("POST", "/api/chat", {
+        key: adminKey,
+        body: { messages: [{ role: "user", content: "hello" }] },
+      });
+      assert.equal(res.status, 500);
+      const data = await res.json();
+      assert.ok(data.error.includes("ANTHROPIC_API_KEY"));
+    } finally {
+      if (origKey) process.env.ANTHROPIC_API_KEY = origKey;
+    }
+  });
+
+  it("returns 400 when messages is missing", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    try {
+      const res = await req("POST", "/api/chat", {
+        key: adminKey,
+        body: {},
+      });
+      assert.equal(res.status, 400);
+      const data = await res.json();
+      assert.ok(data.error.includes("messages"));
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it("returns 400 when messages is empty array", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    try {
+      const res = await req("POST", "/api/chat", {
+        key: adminKey,
+        body: { messages: [] },
+      });
+      assert.equal(res.status, 400);
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it("streams tokens via wsBroadcast and returns content", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+
+    // Create a mock Anthropic client
+    const wsMessages: string[] = [];
+
+    const mockAnthropic = {
+      messages: {
+        stream: () => {
+          const emitter = new EventEmitter();
+          // Fire text events after listeners are attached
+          const textChunks = ["Hello", " world"];
+          let textIdx = 0;
+
+          const originalOn = emitter.on.bind(emitter);
+          emitter.on = (event: string, listener: (...args: any[]) => void) => {
+            originalOn(event, listener);
+            // Once the "text" listener is attached, emit all chunks
+            if (event === "text" && textIdx === 0) {
+              process.nextTick(() => {
+                for (const chunk of textChunks) {
+                  emitter.emit("text", chunk);
+                }
+                textIdx = textChunks.length;
+              });
+            }
+            return emitter;
+          };
+          (emitter as any).finalMessage = () =>
+            new Promise((resolve) => {
+              // Resolve after text events have fired
+              setTimeout(() => resolve({ usage: { input_tokens: 10, output_tokens: 5 } }), 50);
+            });
+          return emitter;
+        },
+      },
+    } as any;
+
+    const chatDeps: ChatDeps = {
+      anthropic: mockAnthropic,
+      wsBroadcast: (msg: string) => wsMessages.push(msg),
+    };
+
+    app = createApp(db, undefined, undefined, chatDeps);
+
+    try {
+      const res = await req("POST", "/api/chat", {
+        key: adminKey,
+        body: { messages: [{ role: "user", content: "hello" }] },
+      });
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.content, "Hello world");
+      assert.deepStrictEqual(data.usage, { input_tokens: 10, output_tokens: 5 });
+
+      // Check WS messages
+      assert.ok(wsMessages.length >= 3); // 2 tokens + 1 done
+      assert.ok(wsMessages.some((m) => JSON.parse(m).type === "chat-token"));
+      assert.ok(wsMessages.some((m) => JSON.parse(m).type === "chat-done"));
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it("returns 429 when Anthropic rate limits", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+
+    const mockAnthropic = {
+      messages: {
+        stream: () => {
+          const err = new Error("Rate limited") as any;
+          err.status = 429;
+          throw err;
+        },
+      },
+    } as any;
+
+    app = createApp(db, undefined, undefined, { anthropic: mockAnthropic });
+
+    try {
+      const res = await req("POST", "/api/chat", {
+        key: adminKey,
+        body: { messages: [{ role: "user", content: "hello" }] },
+      });
+      assert.equal(res.status, 429);
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it("returns 500 on generic Anthropic error", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+
+    const mockAnthropic = {
+      messages: {
+        stream: () => { throw new Error("Something broke"); },
+      },
+    } as any;
+
+    app = createApp(db, undefined, undefined, { anthropic: mockAnthropic });
+
+    try {
+      const res = await req("POST", "/api/chat", {
+        key: adminKey,
+        body: { messages: [{ role: "user", content: "hello" }] },
+      });
+      assert.equal(res.status, 500);
+      const data = await res.json();
+      assert.ok(data.error.includes("Something broke"));
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+});
+
+// === GET /data/import-graph ===
+
+describe("GET /data/import-graph", () => {
+  it("returns nodes and edges for project with imports", async () => {
+    // Create a mini project with imports
+    const srcDir = path.join(tmpDir, "src");
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, "a.ts"), 'import { foo } from "./b.js";\nconsole.log(foo);\n');
+    fs.writeFileSync(path.join(srcDir, "b.ts"), "export const foo = 1;\n");
+
+    db.close();
+    db = initDb(tmpDir);
+    app = createApp(db, tmpDir);
+
+    const res = await app.request("/data/import-graph");
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+
+    assert.ok(Array.isArray(data.nodes));
+    assert.ok(Array.isArray(data.edges));
+    assert.ok(data.nodes.length >= 2);
+    assert.ok(data.edges.length >= 1);
+
+    // Check node structure
+    const nodeA = data.nodes.find((n: any) => n.id.includes("a.ts"));
+    assert.ok(nodeA);
+    assert.equal(typeof nodeA.size, "number");
+    assert.ok(nodeA.size > 0);
+
+    // Check edge
+    const edge = data.edges.find((e: any) => e.source.includes("a.ts") && e.target.includes("b.ts"));
+    assert.ok(edge);
+  });
+
+  it("returns empty graph for project with no src dir", async () => {
+    db.close();
+    db = initDb(tmpDir);
+    app = createApp(db, tmpDir);
+
+    const res = await app.request("/data/import-graph");
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.deepStrictEqual(data.nodes, []);
+    assert.deepStrictEqual(data.edges, []);
+  });
+
+  it("uses cached result within 30s", async () => {
+    db.close();
+    db = initDb(tmpDir);
+    app = createApp(db, tmpDir);
+
+    const res1 = await app.request("/data/import-graph");
+    const res2 = await app.request("/data/import-graph");
+    assert.equal(res1.status, 200);
+    assert.equal(res2.status, 200);
+
+    const data1 = await res1.json();
+    const data2 = await res2.json();
+    assert.deepStrictEqual(data1, data2);
   });
 });
