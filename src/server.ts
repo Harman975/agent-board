@@ -559,14 +559,6 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
 
   const numstatCache = new Map<string, NumstatResult>();
 
-  function invalidateNumstatCache(branch?: string) {
-    if (branch) {
-      numstatCache.delete(branch);
-    } else {
-      numstatCache.clear();
-    }
-  }
-
   function getCachedNumstat(branch: string): NumstatResult | null {
     const cached = numstatCache.get(branch);
     if (cached) return cached;
