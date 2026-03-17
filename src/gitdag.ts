@@ -216,27 +216,6 @@ export function getChildren(db: Database.Database, hash: string): DagCommit[] {
   ).all(hash) as DagCommit[];
 }
 
-/**
- * Trace lineage from a commit back to root.
- * Returns commits in reverse order (oldest first).
- */
-export function getLineage(db: Database.Database, hash: string): DagCommit[] {
-  const lineage: DagCommit[] = [];
-  const visited = new Set<string>();
-  let current = hash;
-
-  while (current && !visited.has(current)) {
-    visited.add(current);
-    const commit = getDagCommit(db, current);
-    if (!commit) break;
-    lineage.unshift(commit);
-    if (!commit.parent_hash) break;
-    current = commit.parent_hash;
-  }
-
-  return lineage;
-}
-
 // === Diff ===
 
 export function diffCommits(

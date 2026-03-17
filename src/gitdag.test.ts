@@ -15,7 +15,6 @@ import {
   getDagCommit,
   getLeaves,
   getChildren,
-  getLineage,
   diffCommits,
   getDagSummary,
 } from "./gitdag.js";
@@ -270,28 +269,6 @@ describe("getChildren", () => {
   it("returns empty array for nonexistent hash", () => {
     const children = getChildren(db, "0000000000000000000000000000000000000000");
     assert.equal(children.length, 0);
-  });
-});
-
-describe("getLineage", () => {
-  beforeEach(() => {
-    setup();
-    initDag(tmpDir);
-  });
-  afterEach(teardown);
-
-  it("returns single commit for root", () => {
-    const { bundlePath } = createBundleFromCommit(tmpDir, "root.ts", "// root", "Root");
-    const result = pushBundle(db, tmpDir, "@agent-a", bundlePath, "Root");
-
-    const lineage = getLineage(db, result.hash);
-    assert.equal(lineage.length, 1);
-    assert.equal(lineage[0].hash, result.hash);
-  });
-
-  it("returns empty for nonexistent hash", () => {
-    const lineage = getLineage(db, "0000000000000000000000000000000000000000");
-    assert.equal(lineage.length, 0);
   });
 });
 
