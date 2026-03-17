@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { ChannelPriority, Cursor, Post, PostRow, RankedPost } from "./types.js";
+import type { ChannelPriority, Post, PostRow, RankedPost } from "./types.js";
 import { safeJsonParse } from "./agents.js";
 
 // === Channel Priority (supervision table) ===

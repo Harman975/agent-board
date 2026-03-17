@@ -51,11 +51,6 @@ export interface ChannelPriority {
   priority: number;
 }
 
-export interface Cursor {
-  name: string;
-  timestamp: string;
-}
-
 // === Raw row types (JSON fields as strings) ===
 
 export interface AgentRow {
