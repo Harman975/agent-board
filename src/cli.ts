@@ -60,10 +60,6 @@ function requireRC(): BoardRC {
   return rc;
 }
 
-// === File tree helper ===
-
-// api(), readBoardRC, writeBoardRC, BoardRC, ApiError imported from boardrc.ts
-
 // === CLI ===
 
 const program = new Command();
