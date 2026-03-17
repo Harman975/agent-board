@@ -872,14 +872,14 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
 
 // === WebSocket log streaming types ===
 
-export interface LogSubscription {
+interface LogSubscription {
   handle: string;
   logPath: string;
   watcher: fs.FSWatcher;
   offset: number;
 }
 
-export interface WsClient {
+interface WsClient {
   ws: WebSocket;
   subscriptions: Map<string, LogSubscription>;
 }

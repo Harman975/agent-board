@@ -320,7 +320,7 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-export function isClaudeProcess(pid: number): boolean {
+function isClaudeProcess(pid: number): boolean {
   try {
     const output = execSync(`ps -p ${pid} -o command=`, { encoding: "utf-8", stdio: "pipe" }).trim();
     return output.toLowerCase().includes("claude");

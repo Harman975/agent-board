@@ -1,6 +1,5 @@
 import readline from "readline";
 import fs from "fs";
-import path from "path";
 import { getDb } from "./db.js";
 import { normalizeHandle } from "./agents.js";
 import { readBoardRC, ensureServerRunning, api, type BoardRC } from "./boardrc.js";
