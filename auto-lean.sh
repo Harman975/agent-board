@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset CLAUDECODE 2>/dev/null || true
 
 # ============================================================================
 # auto-lean.sh — Karpathy-style hill-climbing code optimizer
