@@ -213,6 +213,107 @@ describe("updateSpawn", () => {
   });
 });
 
+// === boardrc.ts: loadCustomPresets ===
+
+describe("loadCustomPresets", () => {
+  it("returns empty when presets/ dir does not exist", async () => {
+    const { loadCustomPresets } = await import("./boardrc.js");
+    const result = loadCustomPresets(tmpDir);
+    assert.deepEqual(result, {});
+  });
+
+  it("loads valid YAML preset files", async () => {
+    const { loadCustomPresets } = await import("./boardrc.js");
+    const presetsDir = path.join(tmpDir, "presets");
+    fs.mkdirSync(presetsDir);
+    fs.writeFileSync(
+      path.join(presetsDir, "perf.yml"),
+      `name: perf
+description: Maximize performance
+eval: npm run bench
+metric: grep 'ops/sec' eval.log
+direction: higher
+guard: npm test
+`
+    );
+    const result = loadCustomPresets(tmpDir);
+    assert.ok(result.perf);
+    assert.equal(result.perf.description, "Maximize performance");
+    assert.equal(result.perf.direction, "higher");
+    assert.equal(result.perf.eval, "npm run bench");
+  });
+
+  it("loads .yaml extension files", async () => {
+    const { loadCustomPresets } = await import("./boardrc.js");
+    const presetsDir = path.join(tmpDir, "presets");
+    fs.mkdirSync(presetsDir);
+    fs.writeFileSync(
+      path.join(presetsDir, "size.yaml"),
+      `name: size
+description: Minimize bundle size
+eval: npm run build
+metric: "du -sb dist | awk '{print $1}'"
+direction: lower
+guard: npm test
+`
+    );
+    const result = loadCustomPresets(tmpDir);
+    assert.ok(result.size);
+    assert.equal(result.size.direction, "lower");
+  });
+
+  it("skips files with missing required fields", async () => {
+    const { loadCustomPresets } = await import("./boardrc.js");
+    const presetsDir = path.join(tmpDir, "presets");
+    fs.mkdirSync(presetsDir);
+    fs.writeFileSync(
+      path.join(presetsDir, "incomplete.yml"),
+      `name: incomplete
+description: Missing fields
+`
+    );
+    const result = loadCustomPresets(tmpDir);
+    assert.deepEqual(result, {});
+  });
+
+  it("skips files with invalid direction", async () => {
+    const { loadCustomPresets } = await import("./boardrc.js");
+    const presetsDir = path.join(tmpDir, "presets");
+    fs.mkdirSync(presetsDir);
+    fs.writeFileSync(
+      path.join(presetsDir, "bad.yml"),
+      `name: bad
+description: Bad direction
+eval: echo
+metric: echo
+direction: sideways
+guard: echo
+`
+    );
+    const result = loadCustomPresets(tmpDir);
+    assert.deepEqual(result, {});
+  });
+
+  it("skips non-YAML files", async () => {
+    const { loadCustomPresets } = await import("./boardrc.js");
+    const presetsDir = path.join(tmpDir, "presets");
+    fs.mkdirSync(presetsDir);
+    fs.writeFileSync(path.join(presetsDir, "readme.txt"), "not yaml");
+    const result = loadCustomPresets(tmpDir);
+    assert.deepEqual(result, {});
+  });
+
+  it("handles malformed YAML gracefully", async () => {
+    const { loadCustomPresets } = await import("./boardrc.js");
+    const presetsDir = path.join(tmpDir, "presets");
+    fs.mkdirSync(presetsDir);
+    fs.writeFileSync(path.join(presetsDir, "bad.yml"), "\x00\x00\x00");
+    // Should not throw
+    const result = loadCustomPresets(tmpDir);
+    assert.deepEqual(result, {});
+  });
+});
+
 // === sprint-orchestrator.ts: parseNumstat ===
 
 describe("parseNumstat", () => {

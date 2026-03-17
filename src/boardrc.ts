@@ -87,6 +87,83 @@ export async function ensureServerRunning(projectDir?: string): Promise<BoardRC>
   throw new Error("Server failed to start. Check .board-server.log");
 }
 
+// === Custom presets loader ===
+
+export interface MetricPreset {
+  description: string;
+  eval: string;
+  metric: string;
+  direction: "higher" | "lower";
+  guard: string;
+}
+
+/**
+ * Reads YAML files from a presets/ directory relative to `dir`.
+ * Each file should have: name, description, eval, metric, direction, guard.
+ * Returns Record<string, MetricPreset>. Gracefully handles missing dir, malformed YAML, missing fields.
+ */
+export function loadCustomPresets(dir?: string): Record<string, MetricPreset> {
+  const presetsDir = path.join(dir ?? process.cwd(), "presets");
+  const result: Record<string, MetricPreset> = {};
+
+  if (!fs.existsSync(presetsDir)) return result;
+
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(presetsDir, { withFileTypes: true });
+  } catch {
+    return result;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !(entry.name.endsWith(".yml") || entry.name.endsWith(".yaml"))) continue;
+
+    try {
+      const content = fs.readFileSync(path.join(presetsDir, entry.name), "utf-8");
+      const parsed = parseSimpleYaml(content);
+
+      const name = parsed.name;
+      if (!name || !parsed.description || !parsed.eval || !parsed.metric || !parsed.direction || !parsed.guard) {
+        continue; // skip files with missing required fields
+      }
+      if (parsed.direction !== "higher" && parsed.direction !== "lower") {
+        continue; // invalid direction
+      }
+
+      result[name] = {
+        description: parsed.description,
+        eval: parsed.eval,
+        metric: parsed.metric,
+        direction: parsed.direction as "higher" | "lower",
+        guard: parsed.guard,
+      };
+    } catch {
+      // skip malformed files
+    }
+  }
+
+  return result;
+}
+
+/** Simple YAML parser for flat key: value files (no nesting, no arrays). */
+function parseSimpleYaml(content: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const colonIdx = trimmed.indexOf(":");
+    if (colonIdx === -1) continue;
+    const key = trimmed.slice(0, colonIdx).trim();
+    let value = trimmed.slice(colonIdx + 1).trim();
+    // Strip surrounding quotes
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    result[key] = value;
+  }
+  return result;
+}
+
 // === HTTP client for Board API ===
 
 export class ApiError extends Error {
