@@ -681,6 +681,128 @@ export function renderLandingBrief(brief: LandingBrief): string {
   return lines.join("\n");
 }
 
+// === Research history rendering ===
+
+export interface ResearchSession {
+  handle: string;
+  tag: string;
+  preset: string | null;
+  branch: string | null;
+  started_at: string;
+  stopped_at: string | null;
+  experiments: number | null;
+  kept: number | null;
+  discarded: number | null;
+}
+
+export function renderResearchHistory(sessions: ResearchSession[]): string {
+  if (sessions.length === 0) return `  ${c.dim}No research sessions found.${c.reset}`;
+
+  const lines: string[] = [];
+  lines.push(`${c.bold}Research History${c.reset}  (${sessions.length} session${sessions.length === 1 ? "" : "s"})`);
+  lines.push("");
+
+  for (const s of sessions) {
+    const tag = s.tag || "(default)";
+    const status = s.stopped_at ? `${c.dim}stopped${c.reset}` : `${c.green}running${c.reset}`;
+    const duration = formatDuration(s.started_at, s.stopped_at);
+    const branch = s.branch ? `${c.dim}${s.branch}${c.reset}` : `${c.dim}no branch${c.reset}`;
+
+    lines.push(`  ${colorHandle(s.handle)}  tag:${c.bold}${tag}${c.reset}  [${status}]  ${duration}  ${branch}`);
+
+    if (s.preset) {
+      lines.push(`    preset: ${s.preset}`);
+    }
+
+    if (s.experiments !== null) {
+      lines.push(`    experiments: ${s.experiments} total — ${s.kept ?? 0} kept, ${s.discarded ?? 0} discarded`);
+    }
+
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+// === Retro rendering ===
+
+export interface RetroAgent {
+  handle: string;
+  branch: string | null;
+  runtime: string;
+  exitCode: number | null;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface RetroData {
+  sprintName: string;
+  goal: string;
+  created_at: string;
+  finished_at: string | null;
+  agents: RetroAgent[];
+  conflicts: number;
+  testDelta: number | null;
+}
+
+export function renderRetro(retro: RetroData): string {
+  const lines: string[] = [];
+  const duration = formatDuration(retro.created_at, retro.finished_at);
+  const status = retro.finished_at ? `${c.dim}finished${c.reset}` : `${c.green}running${c.reset}`;
+
+  lines.push(`${c.bold}RETROSPECTIVE: ${retro.sprintName}${c.reset}  [${status}]`);
+  lines.push(`Goal: ${retro.goal}`);
+  lines.push(`Duration: ${duration}  |  Agents: ${retro.agents.length}`);
+  lines.push("");
+
+  for (const a of retro.agents) {
+    const exitLabel = a.exitCode === null ? `${c.yellow}running${c.reset}` : a.exitCode === 0 ? `${c.green}exit 0${c.reset}` : `${c.red}exit ${a.exitCode}${c.reset}`;
+    const stats = `+${a.additions}/-${a.deletions} in ${a.filesChanged} file${a.filesChanged === 1 ? "" : "s"}`;
+    const branch = a.branch ? `${c.dim}${a.branch}${c.reset}` : "";
+    lines.push(`  ${colorHandle(a.handle)}  ${exitLabel}  ${a.runtime}  ${stats}  ${branch}`);
+  }
+
+  lines.push("");
+  lines.push(`  Merge conflicts: ${retro.conflicts}`);
+  if (retro.testDelta !== null) {
+    const sign = retro.testDelta >= 0 ? "+" : "";
+    lines.push(`  Test delta: ${sign}${retro.testDelta}`);
+  }
+
+  return lines.join("\n");
+}
+
+export function renderRetroMarkdown(retro: RetroData): string {
+  const lines: string[] = [];
+  const duration = formatDuration(retro.created_at, retro.finished_at);
+
+  lines.push(`# Retrospective: ${retro.sprintName}`);
+  lines.push("");
+  lines.push(`- **Goal:** ${retro.goal}`);
+  lines.push(`- **Date:** ${retro.created_at.split("T")[0]}`);
+  lines.push(`- **Duration:** ${duration}`);
+  lines.push(`- **Agents:** ${retro.agents.length}`);
+  lines.push(`- **Merge conflicts:** ${retro.conflicts}`);
+  if (retro.testDelta !== null) {
+    const sign = retro.testDelta >= 0 ? "+" : "";
+    lines.push(`- **Test delta:** ${sign}${retro.testDelta}`);
+  }
+  lines.push("");
+  lines.push("## Agents");
+  lines.push("");
+  lines.push("| Handle | Exit | Runtime | Files | +/- | Branch |");
+  lines.push("|--------|------|---------|-------|-----|--------|");
+
+  for (const a of retro.agents) {
+    const exit = a.exitCode === null ? "running" : String(a.exitCode);
+    lines.push(`| ${a.handle} | ${exit} | ${a.runtime} | ${a.filesChanged} | +${a.additions}/-${a.deletions} | ${a.branch ?? "-"} |`);
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
 export function renderAgentInspect(agent: AgentBrief): string {
   const lines: string[] = [];
 
