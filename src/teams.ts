@@ -125,11 +125,3 @@ export function removeMember(
   return result.changes > 0;
 }
 
-export function listMembers(
-  db: Database.Database,
-  teamName: string
-): TeamMember[] {
-  return db
-    .prepare("SELECT * FROM team_members WHERE team_name = ? ORDER BY agent_handle ASC")
-    .all(teamName) as TeamMember[];
-}

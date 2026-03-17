@@ -305,7 +305,7 @@ describe("M2 schema: routes table", () => {
 
 // ============================================================
 // 2. TEAMS — createTeam, getTeam, listTeams, updateTeam,
-//    addMember, removeMember, listMembers, edge cases
+//    addMember, removeMember, edge cases
 // ============================================================
 
 describe("teams: createTeam", () => {
@@ -447,41 +447,41 @@ describe("teams: updateTeam", () => {
   });
 });
 
-describe("teams: addMember / removeMember / listMembers", () => {
+describe("teams: addMember / removeMember", () => {
   beforeEach(() => { setup(); seedAgents(); });
   afterEach(teardown);
 
   it("adds a member to a team", async () => {
-    const { createTeam, addMember, listMembers } = await import("./teams.js");
+    const { createTeam, addMember } = await import("./teams.js");
     createTeam(db, { name: "t1", mission: "m", manager: "mgr" });
     addMember(db, "t1", "worker-a");
-    const members = listMembers(db, "t1");
+    const members = db.prepare("SELECT * FROM team_members WHERE team_name = ?").all("t1");
     assert.equal(members.length, 1);
   });
 
   it("adds multiple members", async () => {
-    const { createTeam, addMember, listMembers } = await import("./teams.js");
+    const { createTeam, addMember } = await import("./teams.js");
     createTeam(db, { name: "t1", mission: "m", manager: "mgr" });
     addMember(db, "t1", "worker-a");
     addMember(db, "t1", "worker-b");
-    const members = listMembers(db, "t1");
+    const members = db.prepare("SELECT * FROM team_members WHERE team_name = ?").all("t1");
     assert.equal(members.length, 2);
   });
 
   it("removes a member from a team", async () => {
-    const { createTeam, addMember, removeMember, listMembers } = await import("./teams.js");
+    const { createTeam, addMember, removeMember } = await import("./teams.js");
     createTeam(db, { name: "t1", mission: "m", manager: "mgr" });
     addMember(db, "t1", "worker-a");
     addMember(db, "t1", "worker-b");
     removeMember(db, "t1", "worker-a");
-    const members = listMembers(db, "t1");
+    const members = db.prepare("SELECT * FROM team_members WHERE team_name = ?").all("t1");
     assert.equal(members.length, 1);
   });
 
   it("returns empty array for team with no members", async () => {
-    const { createTeam, listMembers } = await import("./teams.js");
+    const { createTeam } = await import("./teams.js");
     createTeam(db, { name: "t1", mission: "m", manager: "mgr" });
-    const members = listMembers(db, "t1");
+    const members = db.prepare("SELECT * FROM team_members WHERE team_name = ?").all("t1");
     assert.equal(members.length, 0);
   });
 
