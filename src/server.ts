@@ -10,10 +10,9 @@ import { getFeed, getBriefing, setChannelPriority, listChannelPriorities } from 
 import { pushBundle, fetchBundle, listDagCommits, getLeaves, getChildren, diffCommits, promoteCommit, dagExists, getDagSummary } from "./gitdag.js";
 import { createTeam, getTeam, listTeams, addMember, removeMember, updateTeam } from "./teams.js";
 import { createRoute, listRoutes, updateRoute } from "./routes.js";
-import { parseNumstat, type NumstatResult, SPRINT_REPORT_PROTOCOL } from "./sprint-orchestrator.js";
-import { getSpawn, spawnAgent, listSpawns, isProcessAlive, killAgent, mergeAgent, writeDirective } from "./spawner.js";
+import { parseNumstat, type NumstatResult, startSprint, uniqueSprintName, type AgentSpec } from "./sprint-orchestrator.js";
+import { getSpawn, listSpawns, isProcessAlive, killAgent, mergeAgent, writeDirective } from "./spawner.js";
 import { decompose } from "./decomposer.js";
-import { loadIdentity } from "./identities.js";
 import type { ApiKey, Sprint, SprintAgent } from "./types.js";
 import { BoardEventEmitter, inferAllBuckets, inferBucket } from "./bucket-engine.js";
 import fs from "fs";
@@ -817,73 +816,25 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
       return c.json({ error: "goal and non-empty tasks array are required" }, 400);
     }
 
-    const sprintName = body.name || uniqueSprintName();
-
-    const existing = db.prepare("SELECT name FROM sprints WHERE name = ?").get(sprintName);
-    if (existing) {
-      return c.json({ error: `Sprint "${sprintName}" already exists` }, 409);
-    }
-
-    db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run(sprintName, body.goal);
-
+    const sprintName = body.name || uniqueSprintName(body.goal, db);
+    const serverUrl = process.env.BOARD_URL || "http://localhost:3141";
     const spawnedAgents: { handle: string; pid: number; branch: string }[] = [];
-    const spawnedHandles: string[] = [];
 
     try {
-      for (const spec of body.tasks) {
-        const handle = normalizeHandle(spec.handle);
-
-        if (!getAgent(db, handle)) {
-          createAgent(db, {
-            handle: handle.slice(1),
-            name: handle.slice(1),
-            role: "worker",
-            mission: spec.mission,
-          });
-        }
-
-        let mission = spec.mission;
-
-        let identity = undefined;
-        if (spec.identity) {
-          try {
-            identity = loadIdentity(spec.identity, resolvedProjectDir);
-            identity = { ...identity, content: identity.content + SPRINT_REPORT_PROTOCOL };
-          } catch {
-            // Identity not found — proceed without it
-          }
-        }
-
-        const apiKey = generateKey();
-        storeKey(db, apiKey, handle);
-
-        const serverUrl = process.env.BOARD_URL || "http://localhost:3141";
-
-        const result = spawnAgent(db, {
-          handle,
-          mission,
-          apiKey,
-          serverUrl,
-          projectDir: resolvedProjectDir,
-          identity,
-          scope: spec.scope,
-        });
-
-        db.prepare(
-          "INSERT INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)"
-        ).run(sprintName, handle, spec.identity || null, spec.mission);
-
-        spawnedHandles.push(handle);
-        spawnedAgents.push({ handle, pid: result.pid, branch: result.branch });
-      }
-
+      await startSprint({
+        name: sprintName,
+        goal: body.goal,
+        specs: body.tasks,
+        projectDir: resolvedProjectDir,
+        serverUrl,
+        db,
+        onSpawn: (handle, pid, branch) => {
+          spawnedAgents.push({ handle, pid, branch });
+        },
+      });
       return c.json({ sprintName, agents: spawnedAgents }, 201);
     } catch (e: any) {
-      for (const h of spawnedHandles) {
-        try { killAgent(db, h, resolvedProjectDir); } catch { /* best effort */ }
-      }
-      db.prepare("UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?").run(sprintName);
-      return c.json({ error: e.message }, 500);
+      return c.json({ error: e.message }, e.message.includes("already exists") ? 409 : 500);
     }
   });
 
@@ -917,15 +868,6 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
   });
 
   return app;
-}
-
-// === Helpers ===
-
-/** Generate a unique sprint name based on date + counter. */
-function uniqueSprintName(): string {
-  const date = new Date();
-  const base = `sprint-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
-  return `${base}-${Date.now().toString(36).slice(-4)}`;
 }
 
 // === WebSocket log streaming types ===
