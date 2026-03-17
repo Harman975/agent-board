@@ -7,3 +7,4 @@ e35320d	8689	8685	keep	removed unused getDagCommit from gitdag.ts
 ffc5768	8655	8653	keep	inlined SprintStatus type into Sprint interface
 08a0e62	8653	8649	keep	removed orphaned comments from cli.ts after walkDir removal
 4024554	8649	8641	keep	deduplicated renderPost and renderRankedPost
+ee8e3f7	8641	8608	keep	removed unused saveIdentity function from identities.ts
