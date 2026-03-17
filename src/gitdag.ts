@@ -178,10 +178,6 @@ export function listDagCommits(
   return db.prepare(sql).all(...params) as DagCommit[];
 }
 
-export function getDagCommit(db: Database.Database, hash: string): DagCommit | null {
-  return (db.prepare("SELECT * FROM dag_commits WHERE hash = ?").get(hash) as DagCommit | undefined) ?? null;
-}
-
 /**
  * Get leaves — commits with no children (active exploration frontiers).
  * Uses NOT IN subquery; fine for small DAGs, optimize later if needed.

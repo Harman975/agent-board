@@ -12,7 +12,6 @@ import {
   dagExists,
   pushBundle,
   listDagCommits,
-  getDagCommit,
   getLeaves,
   getChildren,
   diffCommits,
@@ -125,7 +124,7 @@ describe("pushBundle", () => {
     assert.equal(result.message, "Add auth module");
 
     // Verify it's in the DB
-    const commit = getDagCommit(db, result.hash);
+    const commit = db.prepare("SELECT * FROM dag_commits WHERE hash = ?").get(result.hash) as any;
     assert.ok(commit);
     assert.equal(commit!.agent_handle, "@agent-a");
     assert.equal(commit!.message, "Add auth module");
@@ -164,7 +163,7 @@ describe("pushBundle", () => {
     pushBundle(db, tmpDir, "@agent-a", bp2, "Second push");
 
     // Original record preserved
-    const commit = getDagCommit(db, r1.hash);
+    const commit = db.prepare("SELECT * FROM dag_commits WHERE hash = ?").get(r1.hash) as any;
     assert.equal(commit!.message, "First push");
   });
 });
