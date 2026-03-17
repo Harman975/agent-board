@@ -1,5 +1,4 @@
 import type Database from "better-sqlite3";
-import { randomUUID } from "crypto";
 import type { Team, TeamMember, TeamStatus } from "./types.js";
 import { normalizeHandle, validateHandle } from "./agents.js";
 

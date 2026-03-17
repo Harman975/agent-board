@@ -82,10 +82,3 @@ export function updateRoute(
   return getRoute(db, id);
 }
 
-export function listRoutesByTeam(
-  db: Database.Database,
-  teamName: string,
-  opts?: { status?: RouteStatus }
-): Route[] {
-  return listRoutes(db, { team_name: teamName, status: opts?.status });
-}

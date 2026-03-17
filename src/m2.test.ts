@@ -613,10 +613,10 @@ describe("routes: listRoutes", () => {
   it("filters by team", async () => {
     db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run("t1", "m", "@mgr");
     db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run("t2", "m2", "@mgr");
-    const { createRoute, listRoutesByTeam } = await import("./routes.js");
+    const { createRoute, listRoutes } = await import("./routes.js");
     createRoute(db, { team_name: "t1", agent_handle: "worker-a", name: "r1" });
     createRoute(db, { team_name: "t2", agent_handle: "worker-b", name: "r2" });
-    const filtered = listRoutesByTeam(db, "t1");
+    const filtered = listRoutes(db, { team_name: "t1" });
     assert.equal(filtered.length, 1);
     assert.equal(filtered[0].team_name, "t1");
   });
@@ -659,27 +659,27 @@ describe("routes: updateRoute", () => {
   });
 });
 
-describe("routes: listRoutesByTeam", () => {
+describe("routes: listRoutes with team filter", () => {
   beforeEach(() => { setup(); seedAgents(); });
   afterEach(teardown);
 
   it("returns routes for a specific team", async () => {
     db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run("t1", "m", "@mgr");
     db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run("t2", "m2", "@mgr");
-    const { createRoute, listRoutesByTeam } = await import("./routes.js");
+    const { createRoute, listRoutes } = await import("./routes.js");
     createRoute(db, { team_name: "t1", agent_handle: "worker-a", name: "r1" });
     createRoute(db, { team_name: "t1", agent_handle: "worker-b", name: "r2" });
     createRoute(db, { team_name: "t2", agent_handle: "worker-a", name: "r3" });
 
-    const t1Routes = listRoutesByTeam(db, "t1");
+    const t1Routes = listRoutes(db, { team_name: "t1" });
     assert.equal(t1Routes.length, 2);
-    assert.ok(t1Routes.every((r) => r.team_name === "t1"));
+    assert.ok(t1Routes.every((r: any) => r.team_name === "t1"));
   });
 
   it("returns empty array for team with no routes", async () => {
     db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run("t1", "m", "@mgr");
-    const { listRoutesByTeam } = await import("./routes.js");
-    assert.deepStrictEqual(listRoutesByTeam(db, "t1"), []);
+    const { listRoutes } = await import("./routes.js");
+    assert.deepStrictEqual(listRoutes(db, { team_name: "t1" }), []);
   });
 });
 
