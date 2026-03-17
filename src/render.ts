@@ -427,7 +427,7 @@ export function renderDagSummary(summary: DagSummary): string {
 
 // === Sprint orchestrator rendering ===
 
-function formatDuration(startIso: string, endIso?: string | null): string {
+export function formatDuration(startIso: string, endIso?: string | null): string {
   const start = new Date(startIso.endsWith("Z") ? startIso : startIso + "Z");
   const end = endIso ? new Date(endIso.endsWith("Z") ? endIso : endIso + "Z") : new Date();
   const diffMs = end.getTime() - start.getTime();

@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import type Database from "better-sqlite3";
 import type { Sprint, SprintAgent, SprintReport, SprintAgentReport, SprintBranch, AgentBrief, LandingBrief } from "./types.js";
-import { parseAgentReport } from "./render.js";
+import { parseAgentReport, formatDuration } from "./render.js";
 
 // === Shared git diff parsing ===
 
@@ -153,16 +153,7 @@ This report will be shown to the CEO in the sprint finish view.
 
 // === Runtime formatting ===
 
-function formatRuntime(startIso: string, endIso?: string | null): string {
-  const start = new Date(startIso.endsWith("Z") ? startIso : startIso + "Z");
-  const end = endIso ? new Date(endIso.endsWith("Z") ? endIso : endIso + "Z") : new Date();
-  const diffMs = end.getTime() - start.getTime();
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  const remMins = mins % 60;
-  return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
-}
+const formatRuntime = formatDuration;
 
 function countTests(testsStr: string | null): number | null {
   if (!testsStr) return null;
