@@ -34,10 +34,3 @@ export function getCommit(db: Database.Database, hash: string): Commit | null {
   const row = db.prepare("SELECT * FROM commits WHERE hash = ?").get(hash) as CommitRow | undefined;
   return row ? rowToCommit(row) : null;
 }
-
-export function listCommitsByPost(db: Database.Database, postId: string): Commit[] {
-  const rows = db
-    .prepare("SELECT * FROM commits WHERE post_id = ? ORDER BY created_at ASC")
-    .all(postId) as CommitRow[];
-  return rows.map(rowToCommit);
-}

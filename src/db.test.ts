@@ -4,7 +4,7 @@ import { initDb, dbExists } from "./db.js";
 import { createAgent, getAgent, listAgents, updateAgent } from "./agents.js";
 import { createChannel, getChannel, listChannels } from "./channels.js";
 import { createPost, getPost, listPosts, getThread } from "./posts.js";
-import { linkCommit, getCommit, listCommitsByPost } from "./commits.js";
+import { linkCommit, getCommit } from "./commits.js";
 import { generateKey, hashKey, storeKey, validateKey, isAdminKey, revokeKey } from "./auth.js";
 import { checkRateLimit, resetRateLimits } from "./ratelimit.js";
 import { setChannelPriority, getChannelPriority, listChannelPriorities, getFeed, getBriefing, getCursor, setCursor, parseDuration } from "./supervision.js";
@@ -376,15 +376,6 @@ describe("commits", () => {
     assert.throws(() => linkCommit(db, { hash: "abc", post_id: post.id }), /already linked/);
   });
 
-  it("lists commits by post", () => {
-    const post = createPost(db, { author: "bot", channel: "work", content: "work" });
-    linkCommit(db, { hash: "aaa", post_id: post.id, files: ["a.ts"] });
-    linkCommit(db, { hash: "bbb", post_id: post.id, files: ["b.ts"] });
-
-    const commits = listCommitsByPost(db, post.id);
-    assert.equal(commits.length, 2);
-  });
-
   it("rejects commit for missing post", () => {
     assert.throws(() => linkCommit(db, { hash: "xxx", post_id: "fake-id" }), /not found/);
   });
@@ -409,10 +400,6 @@ describe("commits", () => {
     assert.deepStrictEqual(commit.files, []);
   });
 
-  it("listCommitsByPost returns empty array when no commits", () => {
-    const post = createPost(db, { author: "bot", channel: "work", content: "no commits" });
-    assert.deepStrictEqual(listCommitsByPost(db, post.id), []);
-  });
 });
 
 // === Foundation: Auth ===
