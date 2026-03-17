@@ -102,36 +102,3 @@ export function listIdentities(baseDir?: string): string[] {
     .sort();
 }
 
-/**
- * Save an identity to identities/<name>.md.
- * Generates YAML frontmatter + markdown body.
- */
-export function saveIdentity(identity: Identity, baseDir?: string): void {
-  const dir = identitiesDir(baseDir);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  const filename = identity.name.toLowerCase().replace(/\s+/g, "-");
-  const filePath = path.join(dir, `${filename}.md`);
-
-  const expertise =
-    identity.expertise.length > 0
-      ? `[${identity.expertise.join(", ")}]`
-      : "[]";
-
-  const frontmatter = [
-    "---",
-    `name: ${identity.name}`,
-    `description: ${identity.description}`,
-    `expertise: ${expertise}`,
-    `vibe: ${identity.vibe}`,
-    "---",
-  ].join("\n");
-
-  const content = identity.content
-    ? `${frontmatter}\n\n${identity.content}\n`
-    : `${frontmatter}\n`;
-
-  fs.writeFileSync(filePath, content, "utf-8");
-}
