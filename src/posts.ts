@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import type { Post, PostRow } from "./types.js";
 import { safeJsonParse } from "./agents.js";
 
@@ -22,7 +22,7 @@ export function createPost(
 ): Post {
   const author = opts.author.startsWith("@") ? opts.author : `@${opts.author}`;
   const channel = opts.channel.startsWith("#") ? opts.channel : `#${opts.channel}`;
-  const id = uuid();
+  const id = randomUUID();
 
   const agent = db.prepare("SELECT handle FROM agents WHERE handle = ?").get(author);
   if (!agent) {
