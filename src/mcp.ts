@@ -6,10 +6,9 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import fs from "fs";
 import path from "path";
-import { spawn as nodeSpawn } from "child_process";
-import { getDb, dbExists, initBoard } from "./db.js";
+import { getDb } from "./db.js";
 import { normalizeHandle } from "./agents.js";
-import { readBoardRC, writeBoardRC, type BoardRC } from "./boardrc.js";
+import { readBoardRC, ensureServerRunning, type BoardRC } from "./boardrc.js";
 import {
   startSprint,
   uniqueSprintName,
@@ -53,58 +52,7 @@ function db(): Database.Database {
 
 let _rc: BoardRC | null = null;
 async function rc(): Promise<BoardRC> {
-  if (_rc) return _rc;
-
-  let existing = readBoardRC(PROJECT_DIR);
-  if (!dbExists(PROJECT_DIR) || !existing) {
-    const { adminKey } = initBoard(PROJECT_DIR);
-    existing = { url: "http://localhost:3141", key: adminKey };
-    writeBoardRC(existing, PROJECT_DIR);
-  }
-
-  // Auto-start server if not running
-  try {
-    const res = await fetch(`${existing.url}/api/agents`, {
-      headers: { Authorization: `Bearer ${existing.key}` },
-    });
-    if (res.ok) {
-      _rc = existing;
-      return _rc;
-    }
-  } catch {
-    // Server not running — start it
-  }
-
-  const logPath = path.join(PROJECT_DIR, ".board-server.log");
-  const logFd = fs.openSync(logPath, "a");
-  const cliPath = path.join(import.meta.dirname, "cli.js");
-
-  const child = nodeSpawn(process.execPath, [cliPath, "serve"], {
-    cwd: PROJECT_DIR,
-    stdio: ["ignore", logFd, logFd],
-    detached: true,
-    env: process.env,
-  });
-  child.unref();
-  fs.closeSync(logFd);
-
-  existing.serverPid = child.pid!;
-  writeBoardRC(existing, PROJECT_DIR);
-
-  // Wait for server to be ready
-  for (let i = 0; i < 30; i++) {
-    await new Promise((r) => setTimeout(r, 200));
-    try {
-      const res = await fetch(`${existing.url}/api/agents`, {
-        headers: { Authorization: `Bearer ${existing.key}` },
-      });
-      if (res.ok) break;
-    } catch {
-      // Not ready yet
-    }
-  }
-
-  _rc = existing;
+  if (!_rc) _rc = await ensureServerRunning(PROJECT_DIR);
   return _rc;
 }
 

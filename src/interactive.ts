@@ -1,10 +1,9 @@
 import readline from "readline";
 import fs from "fs";
 import path from "path";
-import { spawn as nodeSpawn } from "child_process";
-import { dbExists, getDb, initBoard } from "./db.js";
+import { getDb } from "./db.js";
 import { normalizeHandle } from "./agents.js";
-import { readBoardRC, writeBoardRC, api, type BoardRC } from "./boardrc.js";
+import { readBoardRC, ensureServerRunning, api, type BoardRC } from "./boardrc.js";
 import {
   c,
   renderFeed,
@@ -55,38 +54,6 @@ export function parseCommand(input: string): ParsedCommand {
   };
 }
 
-// === Server management ===
-
-async function isServerRunning(rc: BoardRC): Promise<boolean> {
-  try {
-    const res = await fetch(`${rc.url}/api/agents`, {
-      headers: { Authorization: `Bearer ${rc.key}` },
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-function startServerBackground(rc: BoardRC): number {
-  const logPath = path.join(process.cwd(), ".board-server.log");
-  const logFd = fs.openSync(logPath, "a");
-  const cliPath = path.join(import.meta.dirname, "cli.js");
-
-  const child = nodeSpawn(
-    process.execPath,
-    [cliPath, "serve"],
-    { cwd: process.cwd(), stdio: ["ignore", logFd, logFd], detached: true, env: process.env }
-  );
-
-  child.unref();
-  fs.closeSync(logFd);
-
-  rc.serverPid = child.pid!;
-  writeBoardRC(rc);
-  return child.pid!;
-}
-
 // === Readline helpers ===
 
 function createRL(): readline.Interface {
@@ -99,10 +66,6 @@ function ask(rl: readline.Interface, question: string): Promise<string> {
   });
 }
 
-/**
- * Print a notification line without garbling user input.
- * Clears the current line, prints the message, then redraws the prompt.
- */
 function notify(rl: readline.Interface, msg: string): void {
   readline.clearLine(process.stdout, 0);
   readline.cursorTo(process.stdout, 0);
@@ -110,35 +73,8 @@ function notify(rl: readline.Interface, msg: string): void {
   rl.prompt(true);
 }
 
-// === Init + Server setup ===
-
 async function ensureReady(): Promise<BoardRC> {
-  let rc = readBoardRC();
-
-  if (!dbExists() || !rc) {
-    console.log(`${c.yellow}Initializing board...${c.reset}`);
-    const { adminKey } = initBoard();
-    rc = { url: "http://localhost:3141", key: adminKey };
-    writeBoardRC(rc);
-    console.log(`${c.green}Board initialized.${c.reset}\n`);
-  }
-
-  if (!(await isServerRunning(rc))) {
-    console.log(`${c.yellow}Starting server...${c.reset}`);
-    const pid = startServerBackground(rc);
-
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 200));
-      if (await isServerRunning(rc)) {
-        console.log(`${c.green}Server running${c.reset} ${c.dim}(PID ${pid}, port 3141)${c.reset}\n`);
-        return rc;
-      }
-    }
-    console.error(`${c.red}Server failed to start. Check .board-server.log${c.reset}`);
-    process.exit(1);
-  }
-
-  return rc;
+  return ensureServerRunning();
 }
 
 // === Background sprint poller ===

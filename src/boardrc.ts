@@ -1,8 +1,9 @@
 import fs from "fs";
 import path from "path";
+import { spawn as nodeSpawn } from "child_process";
 
 // === Shared .boardrc helpers ===
-// Used by cli.ts, interactive.ts, and sprint-orchestrator.ts
+// Used by cli.ts, interactive.ts, mcp.ts, and sprint-orchestrator.ts
 
 export interface BoardRC {
   url: string;
@@ -25,6 +26,65 @@ export function readBoardRC(dir?: string): BoardRC | null {
 export function writeBoardRC(rc: BoardRC, dir?: string): void {
   const rcPath = path.join(dir ?? process.cwd(), BOARDRC_FILE);
   fs.writeFileSync(rcPath, JSON.stringify(rc, null, 2) + "\n");
+}
+
+// === Server lifecycle ===
+
+async function isServerRunning(rc: BoardRC): Promise<boolean> {
+  try {
+    const res = await fetch(`${rc.url}/api/agents`, {
+      headers: { Authorization: `Bearer ${rc.key}` },
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+function startServerBackground(rc: BoardRC, projectDir: string): number {
+  const logPath = path.join(projectDir, ".board-server.log");
+  const logFd = fs.openSync(logPath, "a");
+  const cliPath = path.join(import.meta.dirname, "cli.js");
+
+  const child = nodeSpawn(process.execPath, [cliPath, "serve"], {
+    cwd: projectDir,
+    stdio: ["ignore", logFd, logFd],
+    detached: true,
+    env: process.env,
+  });
+  child.unref();
+  fs.closeSync(logFd);
+
+  rc.serverPid = child.pid!;
+  writeBoardRC(rc, projectDir);
+  return child.pid!;
+}
+
+/**
+ * Ensure the board is initialized and server is running.
+ * Shared by interactive.ts, mcp.ts, and cli.ts.
+ */
+export async function ensureServerRunning(projectDir?: string): Promise<BoardRC> {
+  const dir = projectDir ?? process.cwd();
+  const { dbExists, initBoard } = await import("./db.js");
+
+  let rc = readBoardRC(dir);
+  if (!dbExists(dir) || !rc) {
+    const { adminKey } = initBoard(dir);
+    rc = { url: "http://localhost:3141", key: adminKey };
+    writeBoardRC(rc, dir);
+  }
+
+  if (await isServerRunning(rc)) return rc;
+
+  startServerBackground(rc, dir);
+
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    if (await isServerRunning(rc)) return rc;
+  }
+
+  throw new Error("Server failed to start. Check .board-server.log");
 }
 
 // === HTTP client for Board API ===
