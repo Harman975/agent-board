@@ -151,12 +151,10 @@ export interface SprintBranch {
 
 // === Sprint orchestrator types ===
 
-export type SprintStatus = "running" | "finished" | "failed";
-
 export interface Sprint {
   name: string;
   goal: string;
-  status: SprintStatus;
+  status: "running" | "finished" | "failed";
   created_at: string;
   finished_at: string | null;
 }

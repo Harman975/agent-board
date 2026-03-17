@@ -3,3 +3,4 @@ n/a	8710	-	crash	withDb used in tests, cannot remove
 e35320d	8689	8685	keep	removed unused getDagCommit from gitdag.ts
 614fce7	8678	8676	keep	inlined formatRuntime alias in sprint-orchestrator.ts
 74a8cdc	8676	8660	keep	removed dead walkDir function from cli.ts
+6c6eecb	8660	8655	keep	removed unused Cursor interface from types.ts
