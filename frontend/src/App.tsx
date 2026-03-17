@@ -9,6 +9,8 @@ import { LogsPanel } from './components/LogsPanel';
 import { SprintLauncher } from './components/SprintLauncher';
 import { LandingBrief } from './components/LandingBrief';
 import { Sidebar } from './components/Sidebar';
+import { ChatPanel } from './components/ChatPanel';
+import { NodeMap } from './components/NodeMap';
 
 export const App: React.FC = () => {
   const [sprint, setSprint] = useState<SprintState | null>(null);
@@ -16,6 +18,7 @@ export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>('kanban');
   const [showLauncher, setShowLauncher] = useState(false);
   const [showBrief, setShowBrief] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const handleEvent = useCallback((event: WSEvent) => {
@@ -93,12 +96,14 @@ export const App: React.FC = () => {
         return <FeedPanel />;
       case 'logs':
         return <LogsPanel agents={sprint?.agents ?? []} />;
+      case 'architecture':
+        return <NodeMap />;
     }
   };
 
   return (
     <div className="app">
-      <ActionBar sprint={sprint} connected={connected} />
+      <ActionBar sprint={sprint} connected={connected} onToggleChat={() => setChatOpen((v) => !v)} chatOpen={chatOpen} />
       <div className="app-body">
         <Sidebar
           sprint={sprint}
@@ -112,6 +117,7 @@ export const App: React.FC = () => {
             {renderPanel()}
           </main>
         </div>
+        <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} />
       </div>
     </div>
   );

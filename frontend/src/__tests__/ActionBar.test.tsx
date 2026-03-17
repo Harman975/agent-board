@@ -37,29 +37,29 @@ const sprint: SprintState = {
 
 describe('ActionBar', () => {
   it('shows sprint name', () => {
-    render(<ActionBar sprint={sprint} connected={true} />);
+    render(<ActionBar sprint={sprint} connected={true} onToggleChat={() => {}} chatOpen={false} />);
     expect(screen.getByText('Sprint Alpha')).toBeInTheDocument();
   });
 
   it('shows agent counts per bucket', () => {
-    render(<ActionBar sprint={sprint} connected={true} />);
+    render(<ActionBar sprint={sprint} connected={true} onToggleChat={() => {}} chatOpen={false} />);
     expect(screen.getByText('1 active')).toBeInTheDocument();
     expect(screen.getByText('1 done')).toBeInTheDocument();
     expect(screen.getByText('0 blocked')).toBeInTheDocument();
   });
 
   it('shows no active sprint when sprint is null', () => {
-    render(<ActionBar sprint={null} connected={false} />);
+    render(<ActionBar sprint={null} connected={false} onToggleChat={() => {}} chatOpen={false} />);
     expect(screen.getByText('No active sprint')).toBeInTheDocument();
   });
 
   it('shows connection status', () => {
-    render(<ActionBar sprint={sprint} connected={true} />);
+    render(<ActionBar sprint={sprint} connected={true} onToggleChat={() => {}} chatOpen={false} />);
     expect(screen.getByText('Live')).toBeInTheDocument();
   });
 
   it('shows polling status when disconnected', () => {
-    render(<ActionBar sprint={sprint} connected={false} />);
+    render(<ActionBar sprint={sprint} connected={false} onToggleChat={() => {}} chatOpen={false} />);
     expect(screen.getByText('Polling')).toBeInTheDocument();
   });
 });
