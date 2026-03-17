@@ -12,7 +12,12 @@ import {
   renderChannelList,
   renderSpawnList,
   renderStatus,
+  renderResearchHistory,
+  renderRetro,
+  renderRetroMarkdown,
   type SpawnInfo,
+  type ResearchSession,
+  type RetroData,
 } from "./render.js";
 import type { Post, Agent, RankedPost } from "./types.js";
 import type { PostThread } from "./posts.js";
@@ -473,5 +478,143 @@ describe("renderStatus", () => {
     });
     assert.ok(output.includes("AgentBoard Status"));
     assert.ok(!output.includes("Spawned"));
+  });
+});
+
+// === renderResearchHistory ===
+
+describe("renderResearchHistory", () => {
+  it("renders empty research history", () => {
+    const output = renderResearchHistory([]);
+    assert.ok(output.includes("No research sessions"));
+  });
+
+  it("renders sessions with tag, branch, and experiments", () => {
+    const sessions: ResearchSession[] = [
+      {
+        handle: "@researcher-security",
+        tag: "security",
+        preset: "security",
+        branch: "agent/researcher-security",
+        started_at: new Date().toISOString(),
+        stopped_at: new Date().toISOString(),
+        experiments: 10,
+        kept: 7,
+        discarded: 3,
+      },
+    ];
+    const output = renderResearchHistory(sessions);
+    assert.ok(output.includes("Research History"));
+    assert.ok(output.includes("@researcher-security"));
+    assert.ok(output.includes("security"));
+    assert.ok(output.includes("7 kept"));
+    assert.ok(output.includes("3 discarded"));
+  });
+
+  it("renders sessions without experiments", () => {
+    const sessions: ResearchSession[] = [
+      {
+        handle: "@researcher",
+        tag: "(default)",
+        preset: null,
+        branch: null,
+        started_at: new Date().toISOString(),
+        stopped_at: null,
+        experiments: null,
+        kept: null,
+        discarded: null,
+      },
+    ];
+    const output = renderResearchHistory(sessions);
+    assert.ok(output.includes("@researcher"));
+    assert.ok(!output.includes("experiments"));
+  });
+});
+
+// === renderRetro ===
+
+describe("renderRetro", () => {
+  function makeRetro(overrides: Partial<RetroData> = {}): RetroData {
+    return {
+      sprintName: "test-sprint",
+      goal: "Test goal",
+      created_at: "2026-03-01T10:00:00Z",
+      finished_at: "2026-03-01T12:00:00Z",
+      agents: [
+        {
+          handle: "@worker-1",
+          branch: "agent/worker-1",
+          runtime: "2h",
+          exitCode: 0,
+          filesChanged: 5,
+          additions: 100,
+          deletions: 20,
+        },
+      ],
+      conflicts: 0,
+      testDelta: null,
+      ...overrides,
+    };
+  }
+
+  it("renders retro with sprint name and goal", () => {
+    const output = renderRetro(makeRetro());
+    assert.ok(output.includes("RETROSPECTIVE: test-sprint"));
+    assert.ok(output.includes("Test goal"));
+  });
+
+  it("renders agent details", () => {
+    const output = renderRetro(makeRetro());
+    assert.ok(output.includes("@worker-1"));
+    assert.ok(output.includes("exit 0"));
+    assert.ok(output.includes("+100/-20"));
+  });
+
+  it("renders merge conflicts count", () => {
+    const output = renderRetro(makeRetro({ conflicts: 3 }));
+    assert.ok(output.includes("Merge conflicts: 3"));
+  });
+
+  it("renders test delta when available", () => {
+    const output = renderRetro(makeRetro({ testDelta: 5 }));
+    assert.ok(output.includes("Test delta: +5"));
+  });
+
+  it("renders negative test delta", () => {
+    const output = renderRetro(makeRetro({ testDelta: -2 }));
+    assert.ok(output.includes("Test delta: -2"));
+  });
+});
+
+// === renderRetroMarkdown ===
+
+describe("renderRetroMarkdown", () => {
+  it("generates valid markdown with table", () => {
+    const retro: RetroData = {
+      sprintName: "sprint-1",
+      goal: "Build features",
+      created_at: "2026-03-01T10:00:00Z",
+      finished_at: "2026-03-01T12:00:00Z",
+      agents: [
+        {
+          handle: "@auth",
+          branch: "agent/auth",
+          runtime: "2h",
+          exitCode: 0,
+          filesChanged: 3,
+          additions: 50,
+          deletions: 10,
+        },
+      ],
+      conflicts: 1,
+      testDelta: 3,
+    };
+    const md = renderRetroMarkdown(retro);
+    assert.ok(md.includes("# Retrospective: sprint-1"));
+    assert.ok(md.includes("**Goal:** Build features"));
+    assert.ok(md.includes("| @auth |"));
+    assert.ok(md.includes("+50/-10"));
+    assert.ok(md.includes("**Merge conflicts:** 1"));
+    assert.ok(md.includes("**Test delta:** +3"));
   });
 });

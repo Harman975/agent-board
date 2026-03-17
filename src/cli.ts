@@ -32,7 +32,14 @@ import {
   renderAgentInspect,
   renderPortfolio,
   renderAlerts,
+  renderResearchHistory,
+  renderRetro,
+  renderRetroMarkdown,
+  formatDuration,
   type SpawnInfo,
+  type ResearchSession,
+  type RetroAgent,
+  type RetroData,
 } from "./render.js";
 import type { Agent, DagCommit, Post, RankedPost, Team, TeamMember, Route, SprintValidation, SprintBranch, Sprint, SprintAgent, SprintReport, SprintAgentReport, Alert } from "./types.js";
 import type { BriefingSummary } from "./supervision.js";
@@ -1773,6 +1780,77 @@ identity
     console.log(fs.readFileSync(identityPath, "utf-8"));
   });
 
+identity
+  .command("import <pathOrGlob>")
+  .description("Import agency-agents format identities from markdown files")
+  .action(async (pathOrGlob: string) => {
+    const { parseIdentityFrontmatter, listIdentities, saveIdentity } = await import("./identities.js");
+
+    let files: string[];
+    try {
+      const resolved = path.resolve(pathOrGlob);
+      if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+        files = [resolved];
+      } else if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+        files = fs.readdirSync(resolved)
+          .filter(f => f.endsWith(".md"))
+          .map(f => path.join(resolved, f));
+      } else {
+        // Treat as glob using fs.globSync (Node 22+)
+        files = fs.globSync(pathOrGlob) as unknown as string[];
+      }
+    } catch {
+      die(`Failed to resolve path: ${pathOrGlob}`);
+      return;
+    }
+
+    if (files.length === 0) {
+      die(`No markdown files found at: ${pathOrGlob}`);
+    }
+
+    const existing = new Set(listIdentities(process.cwd()));
+    let imported = 0;
+    let skipped = 0;
+
+    for (const file of files) {
+      if (!file.endsWith(".md")) continue;
+      try {
+        const raw = fs.readFileSync(file, "utf-8");
+        const frontmatter = parseIdentityFrontmatter(raw);
+
+        // Check if identity already exists
+        if (existing.has(frontmatter.name)) {
+          console.log(`  ${c.dim}skip${c.reset}  ${frontmatter.name} (already exists)`);
+          skipped++;
+          continue;
+        }
+
+        // Extract body after closing ---
+        const bodyMatch = raw.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/);
+        const body = bodyMatch ? bodyMatch[1].trim() : "";
+
+        const identity = {
+          name: frontmatter.name,
+          description: frontmatter.description,
+          expertise: frontmatter.expertise ?? [],
+          vibe: frontmatter.vibe ?? "",
+          content: body,
+          emoji: frontmatter.emoji,
+          color: frontmatter.color,
+        };
+
+        saveIdentity(identity, process.cwd());
+        existing.add(frontmatter.name);
+        console.log(`  ${c.green}import${c.reset}  ${frontmatter.name}`);
+        imported++;
+      } catch (err: any) {
+        console.log(`  ${c.red}error${c.reset}  ${path.basename(file)}: ${err.message}`);
+      }
+    }
+
+    console.log(`\nImported ${imported} identit${imported === 1 ? "y" : "ies"}, skipped ${skipped} (already exist).`);
+  });
+
 // --- board research ---
 
 interface MetricPreset {
@@ -1835,6 +1913,25 @@ const METRIC_PRESETS: Record<string, MetricPreset> = {
   },
 };
 
+/** Load custom presets from .boardrc if available, merge with built-ins. */
+function loadMergedPresets(): { presets: Record<string, MetricPreset>; customNames: Set<string> } {
+  const customNames = new Set<string>();
+  const rc = readBoardRC();
+  if (rc) {
+    try {
+      const rcPath = path.join(process.cwd(), ".boardrc");
+      const rcData = JSON.parse(fs.readFileSync(rcPath, "utf-8"));
+      if (rcData.presets && typeof rcData.presets === "object") {
+        for (const name of Object.keys(rcData.presets)) {
+          customNames.add(name);
+        }
+        return { presets: { ...METRIC_PRESETS, ...rcData.presets }, customNames };
+      }
+    } catch { /* ignore parse errors */ }
+  }
+  return { presets: { ...METRIC_PRESETS }, customNames };
+}
+
 const research = program.command("research").description("Auto-research: self-improving background agent");
 
 research
@@ -1863,11 +1960,12 @@ research
       die("No .boardrc found. Run `board init` first.");
     }
 
-    // Resolve preset → defaults → explicit overrides
+    // Resolve preset → defaults → explicit overrides (merges custom presets from .boardrc)
+    const { presets: mergedPresets } = loadMergedPresets();
     const presetName = opts.preset || "tests";
-    const preset = METRIC_PRESETS[presetName];
+    const preset = mergedPresets[presetName];
     if (opts.preset && !preset) {
-      die(`Unknown preset: ${opts.preset}. Available: ${Object.keys(METRIC_PRESETS).join(", ")}`);
+      die(`Unknown preset: ${opts.preset}. Available: ${Object.keys(mergedPresets).join(", ")}`);
     }
     const resolvedMetric = {
       eval: opts.eval || preset.eval,
@@ -1993,11 +2091,13 @@ research
 
 research
   .command("presets")
-  .description("List available metric presets")
+  .description("List available metric presets (including custom from .boardrc)")
   .action(() => {
+    const { presets, customNames } = loadMergedPresets();
     console.log("Available presets:\n");
-    for (const [name, preset] of Object.entries(METRIC_PRESETS)) {
-      console.log(`  ${name}`);
+    for (const [name, preset] of Object.entries(presets)) {
+      const tag = customNames.has(name) ? ` ${c.cyan}[custom]${c.reset}` : "";
+      console.log(`  ${name}${tag}`);
       console.log(`    ${preset.description}`);
       console.log(`    eval:      ${preset.eval}`);
       console.log(`    metric:    ${preset.metric}`);
@@ -2129,6 +2229,139 @@ research
     });
     console.log(`Focus directive posted: "${topic}"`);
     console.log("The researcher will pick this up in its next cycle.");
+  });
+
+research
+  .command("history")
+  .description("Show past research sessions")
+  .action(async () => {
+    const { initDb } = await import("./db.js");
+    const { isProcessAlive } = await import("./spawner.js");
+
+    const db = initDb(process.cwd());
+
+    const spawns = db.prepare(
+      "SELECT * FROM spawns WHERE agent_handle LIKE '@researcher%' ORDER BY started_at DESC"
+    ).all() as { agent_handle: string; pid: number; log_path: string | null; worktree_path: string | null; branch: string | null; started_at: string; stopped_at: string | null; exit_code: number | null }[];
+
+    const sessions: ResearchSession[] = spawns.map((s) => {
+      const tag = s.agent_handle.replace(/^@researcher-?/, "") || "(default)";
+
+      // Try to read results.md from worktree
+      let experiments: number | null = null;
+      let kept: number | null = null;
+      let discarded: number | null = null;
+
+      if (s.worktree_path && fs.existsSync(s.worktree_path)) {
+        const resultsPath = path.join(s.worktree_path, "results.md");
+        if (fs.existsSync(resultsPath)) {
+          const content = fs.readFileSync(resultsPath, "utf-8");
+          const lines = content.split("\n");
+          const dataLines = lines.filter(l => l.startsWith("|") && !l.includes("commit") && !l.includes("---"));
+          experiments = dataLines.length;
+          kept = lines.filter(l => l.includes("| keep |")).length;
+          discarded = lines.filter(l => l.includes("| discard |")).length;
+        }
+      }
+
+      return {
+        handle: s.agent_handle,
+        tag,
+        preset: null,
+        branch: s.branch,
+        started_at: s.started_at,
+        stopped_at: s.stopped_at,
+        experiments,
+        kept,
+        discarded,
+      };
+    });
+
+    console.log(renderResearchHistory(sessions));
+    db.close();
+  });
+
+// --- board retro ---
+
+program
+  .command("retro <sprint-name>")
+  .description("Auto-generate sprint retrospective")
+  .action(async (sprintName: string) => {
+    const { initDb } = await import("./db.js");
+    const { getSpawn, isProcessAlive } = await import("./spawner.js");
+    const { parseNumstat } = await import("./sprint-orchestrator.js");
+
+    const db = initDb(process.cwd());
+    const projectDir = process.cwd();
+
+    // Get sprint
+    const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as { name: string; goal: string; status: string; created_at: string; finished_at: string | null } | undefined;
+    if (!sprint) {
+      db.close();
+      die(`Sprint not found: ${sprintName}`);
+    }
+
+    // Get sprint agents
+    const sprintAgents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(sprintName) as { sprint_name: string; agent_handle: string; identity_name: string | null; mission: string | null }[];
+
+    const retroAgents: RetroAgent[] = [];
+    let totalConflicts = 0;
+
+    for (const sa of sprintAgents) {
+      const spawn = getSpawn(db, sa.agent_handle);
+      const runtime = spawn ? formatDuration(spawn.started_at, spawn.stopped_at) : "?";
+      const exitCode = spawn?.exit_code ?? null;
+      const branch = spawn?.branch ?? null;
+
+      let additions = 0, deletions = 0, filesChanged = 0;
+      if (branch) {
+        const numstat = parseNumstat(projectDir, branch);
+        if (numstat) {
+          additions = numstat.additions;
+          deletions = numstat.deletions;
+          filesChanged = numstat.filesChanged;
+        }
+      }
+
+      retroAgents.push({
+        handle: sa.agent_handle,
+        branch,
+        runtime,
+        exitCode,
+        filesChanged,
+        additions,
+        deletions,
+      });
+    }
+
+    // Count merge conflicts from git log
+    try {
+      const conflictLog = execSync("git log --all --oneline --grep='conflict' 2>/dev/null || true", {
+        cwd: projectDir,
+        encoding: "utf-8",
+        stdio: "pipe",
+      }).trim();
+      totalConflicts = conflictLog ? conflictLog.split("\n").length : 0;
+    } catch { /* ignore */ }
+
+    const retro: RetroData = {
+      sprintName: sprint.name,
+      goal: sprint.goal,
+      created_at: sprint.created_at,
+      finished_at: sprint.finished_at,
+      agents: retroAgents,
+      conflicts: totalConflicts,
+      testDelta: null,
+    };
+
+    // Generate RETRO.md
+    const retroMd = renderRetroMarkdown(retro);
+    fs.writeFileSync(path.join(projectDir, "RETRO.md"), retroMd);
+
+    // Print to console
+    console.log(renderRetro(retro));
+    console.log(`\n  ${c.dim}Written to RETRO.md${c.reset}`);
+    db.close();
   });
 
 // If no subcommand given, launch interactive mode

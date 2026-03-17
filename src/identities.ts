@@ -87,6 +87,45 @@ export function loadIdentity(name: string, baseDir?: string): Identity {
 }
 
 /**
+ * Save an identity to identities/<name>.md.
+ * Returns true if saved, false if identity already exists and overwrite is false.
+ */
+export function saveIdentity(identity: Identity & { emoji?: string; color?: string }, baseDir?: string, overwrite = false): boolean {
+  const dir = identitiesDir(baseDir);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  const filePath = path.join(dir, `${identity.name}.md`);
+  if (fs.existsSync(filePath) && !overwrite) {
+    return false;
+  }
+
+  const frontmatterLines = [
+    "---",
+    `name: ${identity.name}`,
+    `description: ${identity.description}`,
+  ];
+  if (identity.expertise.length > 0) {
+    frontmatterLines.push(`expertise: [${identity.expertise.join(", ")}]`);
+  }
+  if (identity.vibe) {
+    frontmatterLines.push(`vibe: ${identity.vibe}`);
+  }
+  if (identity.emoji) {
+    frontmatterLines.push(`emoji: ${identity.emoji}`);
+  }
+  if (identity.color) {
+    frontmatterLines.push(`color: ${identity.color}`);
+  }
+  frontmatterLines.push("---");
+
+  const content = frontmatterLines.join("\n") + "\n" + identity.content;
+  fs.writeFileSync(filePath, content, "utf-8");
+  return true;
+}
+
+/**
  * List all identity names (filenames without .md extension).
  */
 export function listIdentities(baseDir?: string): string[] {
