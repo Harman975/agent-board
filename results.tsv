@@ -5,3 +5,4 @@ e35320d	8689	8685	keep	removed unused getDagCommit from gitdag.ts
 74a8cdc	8676	8660	keep	removed dead walkDir function from cli.ts
 6c6eecb	8660	8655	keep	removed unused Cursor interface from types.ts
 ffc5768	8655	8653	keep	inlined SprintStatus type into Sprint interface
+08a0e62	8653	8649	keep	removed orphaned comments from cli.ts after walkDir removal

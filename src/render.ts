@@ -59,26 +59,18 @@ function formatTime(iso: string): string {
   return `${diffD}d ago`;
 }
 
-export function renderPost(post: Post, indent = 0): string {
-  const pad = "  ".repeat(indent);
-  const time = colorTime(formatTime(post.created_at));
-  const shortId = `${c.dim}${post.id.slice(0, 8)}${c.reset}`;
-  const channel = colorChannel(post.channel);
-  const author = colorHandle(post.author);
-
-  return `${pad}${shortId}  ${author}  ${channel}  ${time}\n${pad}  ${post.content}`;
-}
-
-export function renderRankedPost(post: RankedPost, indent = 0): string {
+export function renderPost(post: Post | RankedPost, indent = 0): string {
   const pad = "  ".repeat(indent);
   const time = colorTime(formatTime(post.created_at));
   const shortId = `${c.dim}${post.id.slice(0, 8)}${c.reset}`;
   const author = colorHandle(post.author);
   const channel = colorChannel(post.channel);
-  const pri = post.priority > 0 ? ` ${colorPriority(post.priority)}` : "";
+  const pri = "priority" in post && post.priority > 0 ? ` ${colorPriority(post.priority)}` : "";
 
   return `${pad}${shortId}  ${author}  ${channel}${pri}  ${time}\n${pad}  ${post.content}`;
 }
+
+export const renderRankedPost = renderPost;
 
 export function renderThread(thread: PostThread, indent = 0): string {
   const lines: string[] = [renderPost(thread.post, indent)];
