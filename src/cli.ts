@@ -62,22 +62,6 @@ function requireRC(): BoardRC {
 
 // === File tree helper ===
 
-function walkDir(dir: string, base: string): string[] {
-  const results: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    const rel = path.relative(base, full);
-    if (entry.isDirectory()) {
-      if (entry.name === "node_modules" || entry.name === ".git") continue;
-      results.push(rel + "/");
-      results.push(...walkDir(full, base));
-    } else {
-      results.push(rel);
-    }
-  }
-  return results;
-}
-
 // api(), readBoardRC, writeBoardRC, BoardRC, ApiError imported from boardrc.ts
 
 // === CLI ===
