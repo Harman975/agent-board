@@ -1,7 +1,8 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "crypto";
 import type { Post, PostRow } from "./types.js";
-import { safeJsonParse } from "./agents.js";
+import { safeJsonParse, normalizeHandle } from "./agents.js";
+import { normalizeChannel } from "./channels.js";
 
 function rowToPost(row: PostRow): Post {
   return {
@@ -20,8 +21,8 @@ export function createPost(
     metadata?: Record<string, unknown>;
   }
 ): Post {
-  const author = opts.author.startsWith("@") ? opts.author : `@${opts.author}`;
-  const channel = opts.channel.startsWith("#") ? opts.channel : `#${opts.channel}`;
+  const author = normalizeHandle(opts.author);
+  const channel = normalizeChannel(opts.channel);
   const id = randomUUID();
 
   const agent = db.prepare("SELECT handle FROM agents WHERE handle = ?").get(author);
@@ -68,14 +69,12 @@ export function listPosts(
   const params: unknown[] = [];
 
   if (opts?.author) {
-    const author = opts.author.startsWith("@") ? opts.author : `@${opts.author}`;
     sql += " AND author = ?";
-    params.push(author);
+    params.push(normalizeHandle(opts.author));
   }
   if (opts?.channel) {
-    const channel = opts.channel.startsWith("#") ? opts.channel : `#${opts.channel}`;
     sql += " AND channel = ?";
-    params.push(channel);
+    params.push(normalizeChannel(opts.channel));
   }
   if (opts?.since) {
     sql += " AND created_at >= ?";

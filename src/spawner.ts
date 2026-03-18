@@ -21,7 +21,7 @@ export interface SpawnRecord {
   exit_code: number | null;
 }
 
-export interface SpawnOptions {
+interface SpawnOptions {
   handle: string;
   mission: string;
   apiKey: string;

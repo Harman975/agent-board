@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import type { Channel } from "./types.js";
 
-function normalizeChannel(name: string): string {
+export function normalizeChannel(name: string): string {
   return name.startsWith("#") ? name : `#${name}`;
 }
 

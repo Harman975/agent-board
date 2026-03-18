@@ -563,13 +563,14 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
 
   // === Numstat cache (invalidated on bucket_changed / spawn_stopped) ===
 
-  const numstatCache = new Map<string, NumstatResult>();
+  const numstatCache = new Map<string, { result: NumstatResult; ts: number }>();
+  const NUMSTAT_CACHE_TTL = 30_000; // 30 seconds
 
   function getCachedNumstat(branch: string): NumstatResult | null {
     const cached = numstatCache.get(branch);
-    if (cached) return cached;
+    if (cached && Date.now() - cached.ts < NUMSTAT_CACHE_TTL) return cached.result;
     const result = parseNumstat(resolvedProjectDir, branch);
-    if (result) numstatCache.set(branch, result);
+    if (result) numstatCache.set(branch, { result, ts: Date.now() });
     return result;
   }
 
@@ -732,7 +733,7 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
 
   // Actions: kill, steer, merge
   app.post("/data/sprint/:name/kill/:handle", (c) => {
-    const handle = c.req.param("handle").startsWith("@") ? c.req.param("handle") : `@${c.req.param("handle")}`;
+    const handle = normalizeHandle(c.req.param("handle"));
     try {
       killAgent(db, handle, resolvedProjectDir);
       if (emitter) {
@@ -745,7 +746,7 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
   });
 
   app.post("/data/sprint/:name/steer/:handle", async (c) => {
-    const handle = c.req.param("handle").startsWith("@") ? c.req.param("handle") : `@${c.req.param("handle")}`;
+    const handle = normalizeHandle(c.req.param("handle"));
     const body = await c.req.json();
     if (!body.directive) {
       return c.json({ error: "directive is required" }, 400);

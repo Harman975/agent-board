@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { ChannelPriority, Post, PostRow, RankedPost } from "./types.js";
-import { safeJsonParse } from "./agents.js";
+import { safeJsonParse, normalizeHandle } from "./agents.js";
+import { normalizeChannel } from "./channels.js";
 
 // === Channel Priority (supervision table) ===
 
@@ -9,7 +10,7 @@ export function setChannelPriority(
   channelName: string,
   priority: number
 ): void {
-  channelName = channelName.startsWith("#") ? channelName : `#${channelName}`;
+  channelName = normalizeChannel(channelName);
 
   // Verify channel exists in foundation
   const ch = db.prepare("SELECT name FROM channels WHERE name = ?").get(channelName);
@@ -24,7 +25,7 @@ export function setChannelPriority(
 }
 
 export function getChannelPriority(db: Database.Database, channelName: string): number {
-  channelName = channelName.startsWith("#") ? channelName : `#${channelName}`;
+  channelName = normalizeChannel(channelName);
   const row = db
     .prepare("SELECT priority FROM channel_priority WHERE channel_name = ?")
     .get(channelName) as { priority: number } | undefined;
@@ -52,14 +53,13 @@ export function getFeed(
   const params: unknown[] = [];
 
   if (opts?.channel) {
-    const channel = opts.channel.startsWith("#") ? opts.channel : `#${opts.channel}`;
+    const channel = normalizeChannel(opts.channel);
     sql += " AND p.channel = ?";
     params.push(channel);
   }
   if (opts?.author) {
-    const author = opts.author.startsWith("@") ? opts.author : `@${opts.author}`;
     sql += " AND p.author = ?";
-    params.push(author);
+    params.push(normalizeHandle(opts.author));
   }
   if (opts?.since) {
     sql += " AND p.created_at >= ?";
@@ -88,14 +88,14 @@ export function getFeed(
 
 // === Briefing (cursor-based catch-up) ===
 
-export function getCursor(db: Database.Database, name: string): string | null {
+function getCursor(db: Database.Database, name: string): string | null {
   const row = db
     .prepare("SELECT timestamp FROM cursors WHERE name = ?")
     .get(name) as { timestamp: string } | undefined;
   return row?.timestamp ?? null;
 }
 
-export function setCursor(db: Database.Database, name: string, timestamp: string): void {
+function setCursor(db: Database.Database, name: string, timestamp: string): void {
   db.prepare(`
     INSERT INTO cursors (name, timestamp) VALUES (?, ?)
     ON CONFLICT(name) DO UPDATE SET timestamp = excluded.timestamp

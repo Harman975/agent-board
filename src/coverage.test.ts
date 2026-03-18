@@ -1,7 +1,6 @@
 /**
- * Coverage tests for previously untested exports.
- * Covers: normalizeHandle, validateHandle, getDb, withDb,
- * renderDagCommit, renderOrg, updateSpawn, parseNumstat.
+ * Coverage tests for exports not covered by other test files.
+ * Covers: renderDagCommit, renderOrg, updateSpawn, loadCustomPresets, parseNumstat.
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -20,102 +19,6 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
-});
-
-// === agents.ts: normalizeHandle, validateHandle ===
-
-describe("normalizeHandle", () => {
-  it("adds @ prefix if missing", async () => {
-    const { normalizeHandle } = await import("./agents.js");
-    assert.equal(normalizeHandle("admin"), "@admin");
-  });
-
-  it("keeps @ prefix if present", async () => {
-    const { normalizeHandle } = await import("./agents.js");
-    assert.equal(normalizeHandle("@admin"), "@admin");
-  });
-});
-
-describe("validateHandle", () => {
-  it("accepts valid handles", async () => {
-    const { validateHandle } = await import("./agents.js");
-    assert.doesNotThrow(() => validateHandle("auth-mgr"));
-    assert.doesNotThrow(() => validateHandle("@auth-mgr"));
-    assert.doesNotThrow(() => validateHandle("agent1"));
-  });
-
-  it("rejects empty handle", async () => {
-    const { validateHandle } = await import("./agents.js");
-    assert.throws(() => validateHandle(""), /Invalid handle/);
-  });
-
-  it("rejects handles with special chars", async () => {
-    const { validateHandle } = await import("./agents.js");
-    assert.throws(() => validateHandle("agent!"), /Invalid handle/);
-    assert.throws(() => validateHandle("agent name"), /Invalid handle/);
-  });
-
-  it("rejects handles exceeding 50 chars", async () => {
-    const { validateHandle } = await import("./agents.js");
-    const longHandle = "a".repeat(51);
-    assert.throws(() => validateHandle(longHandle), /too long/);
-  });
-});
-
-// === db.ts: getDb, withDb ===
-
-describe("getDb", () => {
-  it("creates and opens a SQLite database", async () => {
-    const { initDb } = await import("./db.js");
-    const db = initDb(tmpDir);
-    assert.ok(db);
-    assert.ok(fs.existsSync(path.join(tmpDir, "board.db")));
-    db.close();
-  });
-});
-
-describe("withDb", () => {
-  it("runs sync function and closes db", async () => {
-    const { initDb, withDb } = await import("./db.js");
-    // Initialize the DB first
-    const setupDb = initDb(tmpDir);
-    setupDb.close();
-
-    const result = withDb((db) => {
-      const row = db.prepare("SELECT 1 as val").get() as { val: number };
-      return row.val;
-    }, tmpDir);
-    assert.equal(result, 1);
-  });
-
-  it("closes db even if function throws", async () => {
-    const { initDb, withDb, getDb } = await import("./db.js");
-    const setupDb = initDb(tmpDir);
-    setupDb.close();
-
-    assert.throws(() => {
-      withDb(() => {
-        throw new Error("test error");
-      }, tmpDir);
-    }, /test error/);
-
-    // DB should still be accessible (wasn't left locked)
-    const db = getDb(tmpDir);
-    const row = db.prepare("SELECT 1 as val").get() as { val: number };
-    assert.equal(row.val, 1);
-    db.close();
-  });
-
-  it("handles async functions", async () => {
-    const { initDb, withDb } = await import("./db.js");
-    const setupDb = initDb(tmpDir);
-    setupDb.close();
-
-    const result = await withDb(async (db) => {
-      return 42;
-    }, tmpDir);
-    assert.equal(result, 42);
-  });
 });
 
 // === render.ts: renderDagCommit, renderOrg ===

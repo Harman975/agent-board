@@ -30,7 +30,7 @@ export function linkCommit(
   return getCommit(db, opts.hash)!;
 }
 
-export function getCommit(db: Database.Database, hash: string): Commit | null {
+function getCommit(db: Database.Database, hash: string): Commit | null {
   const row = db.prepare("SELECT * FROM commits WHERE hash = ?").get(hash) as CommitRow | undefined;
   return row ? rowToCommit(row) : null;
 }

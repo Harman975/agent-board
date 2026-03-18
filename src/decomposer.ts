@@ -23,7 +23,7 @@ export interface DecompositionResult {
   tasks: DecompositionTask[];
 }
 
-export interface DecompositionOpts {
+interface DecompositionOpts {
   goal: string;
   fileTree: string[];
   clusters: string[][];

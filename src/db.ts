@@ -225,26 +225,3 @@ export function initBoard(dir?: string): { adminKey: string } {
   return { adminKey: rawKey };
 }
 
-/**
- * Open DB, run fn, close DB in finally block.
- * Prevents leaked file handles on errors or early returns.
- * Supports both sync and async callbacks.
- */
-export function withDb<T>(fn: (db: Database.Database) => T, dir?: string): T {
-  const db = getDb(dir);
-  try {
-    const result = fn(db);
-    // If fn returns a promise, ensure db closes after it resolves/rejects
-    if (result && typeof (result as any).then === "function") {
-      return (result as any).then(
-        (val: T) => { db.close(); return val; },
-        (err: unknown) => { db.close(); throw err; },
-      );
-    }
-    db.close();
-    return result;
-  } catch (err) {
-    db.close();
-    throw err;
-  }
-}

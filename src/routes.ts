@@ -28,7 +28,7 @@ export function createRoute(
   return getRoute(db, id)!;
 }
 
-export function getRoute(db: Database.Database, id: string): Route | null {
+function getRoute(db: Database.Database, id: string): Route | null {
   const row = db.prepare("SELECT * FROM routes WHERE id = ?").get(id) as Route | undefined;
   return row ?? null;
 }

@@ -151,7 +151,95 @@ TESTS: <test count, coverage areas, what scenarios are tested>
 This report will be shown to the CEO in the sprint finish view.
 `;
 
-// === Runtime formatting ===
+// === Shared sprint data gathering ===
+//
+//  gatherSprintData() → { sprint, agentData[], preflight }
+//     ├── buildSprintReport() maps agentData → SprintAgentReport[]
+//     └── buildLandingBrief()  maps agentData → AgentBrief[]
+
+interface GatheredAgentData {
+  handle: string;
+  mission: string | null;
+  spawn: import("./spawner.js").SpawnRecord | undefined;
+  alive: boolean;
+  stopped: boolean;
+  report: import("./types.js").ParsedAgentReport | null;
+  lastPost: string | null;
+  lastPosts: { content: string; created_at: string }[];
+  stats: NumstatResult | null;
+}
+
+async function gatherSprintData(
+  sprintName: string,
+  projectDir: string,
+  opts: { skipTests?: boolean } = {},
+) {
+  const { getDb } = await import("./db.js");
+  const { listSpawns, isProcessAlive, markSpawnStopped } = await import("./spawner.js");
+  const db = getDb(projectDir);
+
+  const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as Sprint | undefined;
+  if (!sprint) {
+    db.close();
+    throw new Error(`Sprint not found: ${sprintName}`);
+  }
+
+  const sprintAgents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(sprintName) as SprintAgent[];
+  const spawns = listSpawns(db);
+
+  const escalationCount = (db.prepare(
+    "SELECT COUNT(*) as count FROM posts WHERE channel = '#escalations' AND created_at >= ?"
+  ).get(sprint.created_at) as { count: number }).count;
+
+  const agentData: GatheredAgentData[] = [];
+
+  for (const sa of sprintAgents) {
+    const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
+    const alive = spawn && !spawn.stopped_at ? isProcessAlive(spawn.pid) : false;
+    const stopped = spawn ? !!spawn.stopped_at || !alive : true;
+
+    // Auto-mark dead agents as stopped
+    if (spawn && !spawn.stopped_at && !alive) {
+      markSpawnStopped(db, sa.agent_handle);
+    }
+
+    // Get last 3 posts (superset — callers pick what they need)
+    const lastPosts = db.prepare(
+      "SELECT content, created_at FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 3"
+    ).all(sa.agent_handle) as { content: string; created_at: string }[];
+
+    // Parse structured report from last 10 posts
+    let report = null;
+    const recentPosts = db.prepare(
+      "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 10"
+    ).all(sa.agent_handle) as { content: string }[];
+    for (const p of recentPosts) {
+      report = parseAgentReport(p.content);
+      if (report) break;
+    }
+
+    const stats = spawn?.branch ? parseNumstat(projectDir, spawn.branch) : null;
+
+    agentData.push({
+      handle: sa.agent_handle,
+      mission: sa.mission,
+      spawn,
+      alive,
+      stopped,
+      report,
+      lastPost: lastPosts[0]?.content ?? null,
+      lastPosts,
+      stats,
+    });
+  }
+
+  db.close();
+
+  const handles = sprintAgents.map((sa) => sa.agent_handle);
+  const preflight = await runPreFlight(projectDir, { skipTests: opts.skipTests ?? false, agentHandles: handles });
+
+  return { sprint, agentData, escalationCount, preflight };
+}
 
 function countTests(testsStr: string | null): number | null {
   if (!testsStr) return null;
@@ -166,81 +254,34 @@ export async function buildLandingBrief(
   sprintName: string,
   projectDir: string,
 ): Promise<LandingBrief> {
-  const { getDb } = await import("./db.js");
-  const { listSpawns, isProcessAlive, markSpawnStopped } = await import("./spawner.js");
-  const db = getDb(projectDir);
+  const { sprint, agentData, preflight } = await gatherSprintData(sprintName, projectDir, { skipTests: false });
 
-  const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as Sprint | undefined;
-  if (!sprint) {
-    db.close();
-    throw new Error(`Sprint not found: ${sprintName}`);
-  }
-
-  const sprintAgents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(sprintName) as SprintAgent[];
-  const spawns = listSpawns(db);
-
-  const agents: AgentBrief[] = [];
   let totalTests = 0;
-
-  for (const sa of sprintAgents) {
-    const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
-    const alive = spawn && !spawn.stopped_at ? isProcessAlive(spawn.pid) : false;
-
-    // Auto-mark dead agents as stopped
-    if (spawn && !spawn.stopped_at && !alive) {
-      markSpawnStopped(db, sa.agent_handle);
-    }
-
-    // Determine status
+  const agents: AgentBrief[] = agentData.map((a) => {
     let status: "passed" | "crashed" | "running";
-    if (alive) {
-      status = "running";
-    } else if (spawn?.exit_code === 0) {
-      status = "passed";
-    } else {
-      status = "crashed";
-    }
+    if (a.alive) status = "running";
+    else if (a.spawn?.exit_code === 0) status = "passed";
+    else status = "crashed";
 
-    // Get last 3 posts
-    const lastPosts = db.prepare(
-      "SELECT content, created_at FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 3"
-    ).all(sa.agent_handle) as { content: string; created_at: string }[];
-
-    // Parse report from last 10 posts
-    let report = null;
-    const recentPosts = db.prepare(
-      "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 10"
-    ).all(sa.agent_handle) as { content: string }[];
-    for (const p of recentPosts) {
-      report = parseAgentReport(p.content);
-      if (report) break;
-    }
-
-    const runtime = spawn?.started_at
-      ? formatDuration(spawn.started_at, spawn.stopped_at)
+    const runtime = a.spawn?.started_at
+      ? formatDuration(a.spawn.started_at, a.spawn.stopped_at)
       : null;
 
-    const testCount = countTests(report?.tests ?? null);
+    const testCount = countTests(a.report?.tests ?? null);
     if (testCount !== null) totalTests += testCount;
 
-    agents.push({
-      handle: sa.agent_handle,
+    return {
+      handle: a.handle,
       status,
-      report,
-      lastPosts,
-      exitCode: spawn?.exit_code ?? null,
+      report: a.report,
+      lastPosts: a.lastPosts,
+      exitCode: a.spawn?.exit_code ?? null,
       runtime,
-      branch: spawn?.branch ?? null,
+      branch: a.spawn?.branch ?? null,
       testCount,
-      mission: sa.mission,
-    });
-  }
-
-  db.close();
-
-  // Run pre-flight for conflict detection and test status
-  const handles = sprintAgents.map((sa) => sa.agent_handle);
-  const pf = await runPreFlight(projectDir, { skipTests: false, agentHandles: handles });
+      mission: a.mission,
+    };
+  });
 
   return {
     sprint,
@@ -251,8 +292,8 @@ export async function buildLandingBrief(
       running: agents.filter((a) => a.status === "running").length,
       totalTests,
     },
-    conflicts: pf.conflicts,
-    testsPassOnMain: pf.testsPass,
+    conflicts: preflight.conflicts,
+    testsPassOnMain: preflight.testsPass,
   };
 }
 
@@ -308,98 +349,43 @@ export async function buildSprintReport(
   projectDir: string,
   detail = false,
 ): Promise<SprintReport> {
-  const { getDb } = await import("./db.js");
-  const { listSpawns, isProcessAlive } = await import("./spawner.js");
-  const db = getDb(projectDir);
+  const { sprint, agentData, escalationCount, preflight } = await gatherSprintData(sprintName, projectDir, { skipTests: true });
 
-  // Get sprint
-  const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as Sprint | undefined;
-  if (!sprint) {
-    db.close();
-    throw new Error(`Sprint not found: ${sprintName}`);
-  }
-
-  // Get sprint agents
-  const sprintAgents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(sprintName) as SprintAgent[];
-  const spawns = listSpawns(db);
-
-  // Get escalation count since sprint started
-  const escalationCount = (db.prepare(
-    "SELECT COUNT(*) as count FROM posts WHERE channel = '#escalations' AND created_at >= ?"
-  ).get(sprint.created_at) as { count: number }).count;
-
-  // Build per-agent reports
-  const agentReports: SprintAgentReport[] = [];
   let totalAdditions = 0;
   let totalDeletions = 0;
   let totalFiles = 0;
 
-  const { markSpawnStopped: markStopped } = await import("./spawner.js");
-  for (const sa of sprintAgents) {
-    const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
-    const alive = spawn && !spawn.stopped_at ? isProcessAlive(spawn.pid) : false;
-    const stopped = spawn ? !!spawn.stopped_at || !alive : true;
-
-    // Auto-mark dead agents as stopped (process exited but exit handler didn't fire)
-    if (spawn && !spawn.stopped_at && !alive) {
-      markStopped(db, sa.agent_handle);
-    }
-
-    // Get last post
-    const lastPost = db.prepare(
-      "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 1"
-    ).get(sa.agent_handle) as { content: string } | undefined;
-
-    // Try to find a structured report in recent posts
-    let parsedReport = null;
-    if (lastPost) {
-      const recentPosts = db.prepare(
-        "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 10"
-      ).all(sa.agent_handle) as { content: string }[];
-      for (const p of recentPosts) {
-        parsedReport = parseAgentReport(p.content);
-        if (parsedReport) break;
-      }
-    }
-
-    // Get diff stats
-    const stats = spawn?.branch ? parseNumstat(projectDir, spawn.branch) : null;
-    const additions = stats?.additions ?? 0;
-    const deletions = stats?.deletions ?? 0;
-    const filesChanged = stats?.filesChanged ?? 0;
+  const agentReports: SprintAgentReport[] = agentData.map((a) => {
+    const additions = a.stats?.additions ?? 0;
+    const deletions = a.stats?.deletions ?? 0;
+    const filesChanged = a.stats?.filesChanged ?? 0;
 
     totalAdditions += additions;
     totalDeletions += deletions;
     totalFiles += filesChanged;
 
-    agentReports.push({
-      handle: sa.agent_handle,
-      branch: spawn?.branch || null,
-      alive,
-      stopped,
-      exitCode: spawn?.exit_code ?? null,
+    return {
+      handle: a.handle,
+      branch: a.spawn?.branch || null,
+      alive: a.alive,
+      stopped: a.stopped,
+      exitCode: a.spawn?.exit_code ?? null,
       additions,
       deletions,
       filesChanged,
-      mission: sa.mission,
-      lastPost: lastPost?.content || null,
-      report: parsedReport,
-    });
-  }
-
-  db.close();
-
-  // Get merge order + conflicts from pre-flight (skip tests for speed)
-  const handles = sprintAgents.map((sa) => sa.agent_handle);
-  const pf = await runPreFlight(projectDir, { skipTests: true, agentHandles: handles });
+      mission: a.mission,
+      lastPost: a.lastPost,
+      report: a.report,
+    };
+  });
 
   return {
     sprint,
     agents: agentReports,
     totals: { additions: totalAdditions, deletions: totalDeletions, filesChanged: totalFiles },
-    conflicts: pf.conflicts,
+    conflicts: preflight.conflicts,
     escalations: escalationCount,
-    mergeOrder: pf.mergeOrder,
+    mergeOrder: preflight.mergeOrder,
   };
 }
 

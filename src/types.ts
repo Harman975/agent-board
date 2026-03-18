@@ -133,14 +133,6 @@ export interface IdentityFrontmatter {
 
 // === Sprint types ===
 
-export interface SprintValidation {
-  allStopped: boolean;
-  testsPass: boolean;
-  branches: SprintBranch[];
-  conflicts: string[]; // files changed by multiple branches
-  suggestedOrder: string[]; // agent handles in merge order
-}
-
 export interface SprintBranch {
   agent_handle: string;
   branch: string;

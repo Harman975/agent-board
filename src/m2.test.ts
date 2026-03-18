@@ -560,23 +560,20 @@ describe("routes: createRoute", () => {
   });
 });
 
-describe("routes: getRoute", () => {
+describe("routes: createRoute returns retrievable route", () => {
   beforeEach(() => { setup(); seedAgents(); });
   afterEach(teardown);
 
-  it("retrieves a route by id", async () => {
+  it("createRoute returns a complete route object", async () => {
     db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run("t1", "m", "@mgr");
-    const { createRoute, getRoute } = await import("./routes.js");
+    const { createRoute, listRoutes } = await import("./routes.js");
     const created = createRoute(db, { team_name: "t1", agent_handle: "worker-a", name: "route1" });
-    const fetched = getRoute(db, created.id);
-    assert.ok(fetched);
-    assert.equal(fetched!.id, created.id);
-    assert.equal(fetched!.name, "route1");
-  });
-
-  it("returns null for nonexistent route", async () => {
-    const { getRoute } = await import("./routes.js");
-    assert.equal(getRoute(db, "nonexistent-id"), null);
+    assert.ok(created.id);
+    assert.equal(created.name, "route1");
+    // Verify persisted via listRoutes
+    const routes = listRoutes(db, { team_name: "t1" });
+    assert.equal(routes.length, 1);
+    assert.equal(routes[0].id, created.id);
   });
 });
 

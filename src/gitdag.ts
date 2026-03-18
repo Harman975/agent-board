@@ -46,7 +46,7 @@ export function dagExists(projectDir: string): boolean {
 
 // === Push bundle ===
 
-export interface PushResult {
+interface PushResult {
   hash: string;
   parentHash: string | null;
   agentHandle: string;

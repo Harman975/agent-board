@@ -9,14 +9,14 @@ import { normalizeHandle } from "./agents.js";
 
 export type BucketState = "planning" | "in_progress" | "blocked" | "review" | "done";
 
-export interface GitOps {
+interface GitOps {
   hasBranchCommits(projectDir: string, branch: string): boolean;
   isBranchMerged(projectDir: string, branch: string): boolean;
 }
 
 // === Default GitOps (real git) ===
 
-export const defaultGitOps: GitOps = {
+const defaultGitOps: GitOps = {
   hasBranchCommits(projectDir: string, branch: string): boolean {
     try {
       const log = execSync(`git log main..${branch} --oneline`, {
