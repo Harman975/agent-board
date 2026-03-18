@@ -1,4 +1,4 @@
-import type { Agent, DagCommit, Post, RankedPost, Team, TeamMember, Route, Sprint, SprintReport, SprintAgentReport, Alert, AgentBrief, LandingBrief } from "./types.js";
+import type { Agent, DagCommit, Post, RankedPost, Team, TeamMember, Route, Sprint, SprintReport, SprintAgentReport, Alert, AgentBrief, LandingBrief, CompressionReport } from "./types.js";
 import type { PostThread } from "./posts.js";
 import type { BriefingSummary } from "./supervision.js";
 import type { DagSummary, PromoteResult } from "./gitdag.js";
@@ -673,6 +673,19 @@ export function renderLandingBrief(brief: LandingBrief): string {
   }
 
   lines.push("");
+
+  // Compression badge
+  if (brief.compression) {
+    const pct = Math.round(brief.compression.ratio * 100);
+    const badge = pct > 0
+      ? `${c.green}+${brief.compression.beforeLines} → +${brief.compression.afterLines} lines (${pct}% compressed)${c.reset}`
+      : `+${brief.compression.afterLines} lines (no compression)`;
+    lines.push(`  Compression: ${badge}`);
+    if (brief.compression.condenserRuntime) {
+      lines.push(`  ${c.dim}Condenser ran for ${brief.compression.condenserRuntime}${c.reset}`);
+    }
+    lines.push("");
+  }
 
   const testsPart = brief.summary.totalTests > 0 ? ` · ${brief.summary.totalTests} tests added` : "";
   const conflictsPart = ` · ${brief.conflicts.length} conflicts`;

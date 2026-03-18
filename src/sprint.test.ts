@@ -1925,3 +1925,83 @@ describe("parseCommand", () => {
     assert.equal(args, "add tests");
   });
 });
+
+// ============================================================
+// Section 9: Compression pipeline tests
+// ============================================================
+
+import { createStagingBranch, squashMergeToMain } from "./sprint-orchestrator.js";
+
+describe("createStagingBranch", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compress-"));
+    execSync("git init && git config user.name Test && git config user.email test@test.com", { cwd: tmpDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(tmpDir, "file.txt"), "hello");
+    execSync("git add -A && git commit -m init", { cwd: tmpDir, stdio: "pipe" });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("creates a staging branch from main", () => {
+    const branch = createStagingBranch(tmpDir, "my-sprint");
+    assert.equal(branch, "staging/my-sprint");
+
+    // Branch should exist
+    const branches = execSync("git branch", { cwd: tmpDir, encoding: "utf-8" });
+    assert.ok(branches.includes("staging/my-sprint"));
+  });
+
+  it("recreates staging branch if it already exists", () => {
+    createStagingBranch(tmpDir, "my-sprint");
+    // Create again — should not throw
+    const branch = createStagingBranch(tmpDir, "my-sprint");
+    assert.equal(branch, "staging/my-sprint");
+  });
+});
+
+describe("squashMergeToMain", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "squash-"));
+    execSync("git init && git config user.name Test && git config user.email test@test.com", { cwd: tmpDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(tmpDir, "file.txt"), "hello");
+    execSync("git add -A && git commit -m init", { cwd: tmpDir, stdio: "pipe" });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("squash-merges staging branch into main", () => {
+    // Create staging branch with a commit
+    execSync("git checkout -b staging/test-sprint", { cwd: tmpDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(tmpDir, "new.txt"), "content");
+    execSync("git add -A && git commit -m 'add new file'", { cwd: tmpDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(tmpDir, "another.txt"), "more");
+    execSync("git add -A && git commit -m 'add another file'", { cwd: tmpDir, stdio: "pipe" });
+    execSync("git checkout main", { cwd: tmpDir, stdio: "pipe" });
+
+    squashMergeToMain(tmpDir, "staging/test-sprint", "test-sprint", "add features");
+
+    // Main should have the files
+    assert.ok(fs.existsSync(path.join(tmpDir, "new.txt")));
+    assert.ok(fs.existsSync(path.join(tmpDir, "another.txt")));
+
+    // Should be ONE commit on main (init + squash)
+    const log = execSync("git log --oneline", { cwd: tmpDir, encoding: "utf-8" }).trim();
+    const commits = log.split("\n");
+    assert.equal(commits.length, 2); // init + squash
+
+    // Commit message should contain sprint info
+    assert.ok(log.includes("add features"));
+
+    // Staging branch should be deleted
+    const branches = execSync("git branch", { cwd: tmpDir, encoding: "utf-8" });
+    assert.ok(!branches.includes("staging/test-sprint"));
+  });
+});

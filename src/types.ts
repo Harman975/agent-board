@@ -146,7 +146,7 @@ export interface SprintBranch {
 export interface Sprint {
   name: string;
   goal: string;
-  status: "running" | "finished" | "failed";
+  status: "running" | "compressing" | "ready" | "finished" | "failed";
   created_at: string;
   finished_at: string | null;
 }
@@ -210,12 +210,21 @@ export interface AgentBrief {
   mission: string | null;
 }
 
+export interface CompressionReport {
+  beforeLines: number;
+  afterLines: number;
+  ratio: number; // 0-1, e.g. 0.4 = 40% compressed
+  condenserExitCode: number | null;
+  condenserRuntime: string | null;
+}
+
 export interface LandingBrief {
   sprint: Sprint;
   agents: AgentBrief[];
   summary: { passed: number; crashed: number; running: number; totalTests: number };
   conflicts: string[];
   testsPassOnMain: boolean;
+  compression?: CompressionReport;
 }
 
 // === DAG types ===

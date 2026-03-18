@@ -22,6 +22,12 @@ import {
   mergeWithTestGates,
   startSprint,
   uniqueSprintName,
+  createStagingBranch,
+  mergeAgentsToStaging,
+  spawnCondenser,
+  buildCompressionReport,
+  squashMergeToMain,
+  parseNumstat,
   type AgentSpec,
 } from "./sprint-orchestrator.js";
 
@@ -81,20 +87,29 @@ async function ensureReady(): Promise<BoardRC> {
 interface PollerState {
   // Track which agents were alive last poll to detect transitions
   knownAlive: Set<string>;
+  // Track sprints where compression has been triggered to avoid re-triggering
+  compressionTriggered: Set<string>;
+  // Track condenser handle per sprint for monitoring
+  condenserHandles: Map<string, string>;
 }
 
 function startPoller(
   db: Database.Database,
   rl: readline.Interface,
+  noCompress = false,
 ): { stop: () => void } {
-  const state: PollerState = { knownAlive: new Set() };
+  const state: PollerState = {
+    knownAlive: new Set(),
+    compressionTriggered: new Set(),
+    condenserHandles: new Map(),
+  };
 
   const poll = async () => {
     try {
       const { listSpawns, isProcessAlive } = await import("./spawner.js");
 
       const running = db.prepare(
-        "SELECT * FROM sprints WHERE status = 'running'"
+        "SELECT * FROM sprints WHERE status IN ('running', 'compressing', 'ready')"
       ).all() as Sprint[];
 
       for (const sprint of running) {
@@ -103,10 +118,15 @@ function startPoller(
         ).all(sprint.name) as SprintAgent[];
 
         const spawns = listSpawns(db);
-        let allDone = true;
+        const condenserHandle = state.condenserHandles.get(sprint.name);
+
+        // Separate condenser from regular agents
+        const regularAgents = agents.filter((sa) => sa.agent_handle !== condenserHandle);
+
+        let allRegularDone = true;
         let anyNewlyDone = false;
 
-        for (const sa of agents) {
+        for (const sa of regularAgents) {
           const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
           if (!spawn) continue;
 
@@ -114,10 +134,9 @@ function startPoller(
           const key = `${sprint.name}:${sa.agent_handle}`;
 
           if (alive) {
-            allDone = false;
+            allRegularDone = false;
             state.knownAlive.add(key);
           } else if (state.knownAlive.has(key)) {
-            // Was alive, now dead — notify
             state.knownAlive.delete(key);
             anyNewlyDone = true;
             const exitMsg = spawn.exit_code === 0 ? "finished" : `crashed (exit ${spawn.exit_code ?? "?"})`;
@@ -125,8 +144,37 @@ function startPoller(
           }
         }
 
-        if (allDone && anyNewlyDone) {
-          notify(rl, `${c.green}Sprint "${sprint.name}" READY TO LAND${c.reset} — type: land`);
+        // Check if compression is in progress
+        if (sprint.status === "compressing" && condenserHandle) {
+          const condenserSpawn = spawns.find((s) => s.agent_handle === condenserHandle);
+          const condenserAlive = condenserSpawn && !condenserSpawn.stopped_at && isProcessAlive(condenserSpawn.pid);
+
+          if (!condenserAlive) {
+            // Condenser finished — transition to ready
+            db.prepare("UPDATE sprints SET status = 'ready' WHERE name = ?").run(sprint.name);
+            notify(rl, `${c.green}Sprint "${sprint.name}" COMPRESSED — type: land${c.reset}`);
+          }
+          continue;
+        }
+
+        if (sprint.status === "ready") continue;
+
+        // All regular agents done — trigger compression
+        if (allRegularDone && anyNewlyDone && !state.compressionTriggered.has(sprint.name)) {
+          if (noCompress) {
+            notify(rl, `${c.green}Sprint "${sprint.name}" READY TO LAND${c.reset} — type: land`);
+          } else {
+            state.compressionTriggered.add(sprint.name);
+            notify(rl, `All agents done. Starting compression for "${sprint.name}"...`);
+
+            // Trigger compression in background
+            triggerCompression(sprint.name, sprint.goal, regularAgents.map((a) => a.agent_handle), db, rl, state)
+              .catch((err) => {
+                notify(rl, `${c.red}Compression failed: ${err.message}${c.reset}`);
+                // Fall back to ready-to-land without compression
+                notify(rl, `${c.green}Sprint "${sprint.name}" READY TO LAND${c.reset} (uncompressed) — type: land`);
+              });
+          }
         }
       }
     } catch {
@@ -139,6 +187,49 @@ function startPoller(
 
   const interval = setInterval(poll, 10_000);
   return { stop: () => clearInterval(interval) };
+}
+
+// === Compression trigger ===
+
+async function triggerCompression(
+  sprintName: string,
+  goal: string,
+  agentHandles: string[],
+  db: Database.Database,
+  rl: readline.Interface,
+  state: PollerState,
+): Promise<void> {
+  const projectDir = process.cwd();
+  const rc = readBoardRC();
+  if (!rc) throw new Error("No .boardrc found");
+
+  // 1. Create staging branch
+  const stagingBranch = createStagingBranch(projectDir, sprintName);
+  notify(rl, `Created ${stagingBranch}`);
+
+  // 2. Merge agents to staging
+  const { merged, conflicted } = await mergeAgentsToStaging(projectDir, stagingBranch, agentHandles, db);
+  notify(rl, `Merged ${merged.length} agents to staging${conflicted.length > 0 ? ` (${conflicted.length} with conflicts)` : ""}`);
+
+  // 3. Measure baseline LOC
+  const baseline = parseNumstat(projectDir, stagingBranch);
+  const beforeLines = baseline ? baseline.additions - baseline.deletions : 0;
+
+  // 4. Update sprint status
+  db.prepare("UPDATE sprints SET status = 'compressing' WHERE name = ?").run(sprintName);
+
+  // 5. Spawn condenser
+  const condenser = await spawnCondenser({
+    sprintName,
+    stagingBranch,
+    projectDir,
+    serverUrl: rc.url,
+    db,
+    beforeLines: Math.max(0, beforeLines),
+  });
+
+  state.condenserHandles.set(sprintName, condenser.handle);
+  notify(rl, `Condenser spawned (PID ${condenser.pid}) — compressing...`);
 }
 
 // === Actions ===
@@ -217,8 +308,8 @@ async function actionLand(
   let sprintName = nameArg;
   if (!sprintName) {
     const running = db.prepare(
-      "SELECT name FROM sprints WHERE status = 'running' ORDER BY created_at DESC"
-    ).all() as { name: string }[];
+      "SELECT name, status FROM sprints WHERE status IN ('running', 'compressing', 'ready') ORDER BY created_at DESC"
+    ).all() as { name: string; status: string }[];
 
     if (running.length === 0) {
       console.log(`  ${c.dim}No active sprints.${c.reset}\n`);
@@ -234,6 +325,77 @@ async function actionLand(
       if (isNaN(idx) || idx < 0 || idx >= running.length) return;
       sprintName = running[idx].name;
     }
+  }
+
+  // Check sprint status
+  const sprintRow = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as { name: string; goal: string; status: string } | undefined;
+
+  if (sprintRow?.status === "compressing") {
+    console.log(`\n  ${c.yellow}Sprint "${sprintName}" is still compressing.${c.reset}`);
+    console.log(`  ${c.dim}The condenser agent is working. Check back soon or type "status".${c.reset}\n`);
+    return;
+  }
+
+  // If sprint is "ready" (compressed), show compressed landing brief
+  if (sprintRow?.status === "ready") {
+    const stagingBranch = `staging/${sprintName}`;
+    console.log(`\n  ${c.dim}Building compressed landing brief...${c.reset}\n`);
+
+    let brief;
+    try {
+      brief = await buildLandingBrief(sprintName, projectDir);
+    } catch (err: any) {
+      console.log(`  ${c.red}${err.message}${c.reset}\n`);
+      return;
+    }
+
+    // Attach compression report
+    const condenserAgents = db.prepare(
+      "SELECT agent_handle FROM sprint_agents WHERE sprint_name = ? AND identity_name = 'condenser'"
+    ).all(sprintName) as { agent_handle: string }[];
+    const condenserHandle = condenserAgents[0]?.agent_handle;
+
+    if (condenserHandle) {
+      const baseline = parseNumstat(projectDir, stagingBranch);
+      const beforeLines = baseline ? baseline.additions - baseline.deletions : 0;
+      const compression = await buildCompressionReport(projectDir, stagingBranch, Math.max(0, beforeLines), db, condenserHandle);
+      brief.compression = compression;
+    }
+
+    console.log(renderLandingBrief(brief));
+
+    console.log("");
+    console.log(`  ${c.bold}[enter]${c.reset} squash-merge to main  ${c.bold}[d]${c.reset} show diff  ${c.bold}[q]${c.reset} back`);
+
+    const choice = await ask(rl, `  > `);
+
+    if (choice === "q") return;
+
+    if (choice === "d") {
+      try {
+        const { execSync } = await import("child_process");
+        const diff = execSync(`git diff main..${stagingBranch}`, { cwd: projectDir, encoding: "utf-8", stdio: "pipe" });
+        console.log(diff);
+      } catch (err: any) {
+        console.log(`  ${c.red}Could not show diff: ${err.message}${c.reset}`);
+      }
+      // Re-run land
+      await actionLand(sprintName, rc, rl, db);
+      return;
+    }
+
+    if (choice === "") {
+      try {
+        squashMergeToMain(projectDir, stagingBranch, sprintName, sprintRow.goal);
+        db.prepare(
+          "UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?"
+        ).run(sprintName);
+        console.log(`\n  ${c.green}Landed sprint "${sprintName}" as a single squash commit.${c.reset}\n`);
+      } catch (err: any) {
+        console.error(`  ${c.red}Squash merge failed: ${err.message}${c.reset}\n`);
+      }
+    }
+    return;
   }
 
   console.log(`\n  ${c.dim}Building landing brief...${c.reset}\n`);
@@ -348,7 +510,7 @@ async function actionStatus(nameArg: string, db: Database.Database): Promise<voi
   let sprintName = nameArg;
   if (!sprintName) {
     const row = db.prepare(
-      "SELECT name FROM sprints WHERE status = 'running' ORDER BY created_at DESC LIMIT 1"
+      "SELECT name FROM sprints WHERE status IN ('running', 'compressing', 'ready') ORDER BY created_at DESC LIMIT 1"
     ).get() as { name: string } | undefined;
     if (!row) {
       console.log(`  ${c.dim}No active sprints.${c.reset}\n`);
@@ -499,7 +661,7 @@ async function showHeader(rc: BoardRC, db: Database.Database): Promise<void> {
   const active = listSpawns(db, true).filter((s) => isProcessAlive(s.pid));
 
   const runningSprints = db.prepare(
-    "SELECT COUNT(*) as count FROM sprints WHERE status = 'running'"
+    "SELECT COUNT(*) as count FROM sprints WHERE status IN ('running', 'compressing', 'ready')"
   ).get() as { count: number };
 
   console.log(`  ${c.bold}AgentBoard${c.reset} ${c.dim}v0.2.0${c.reset}`);

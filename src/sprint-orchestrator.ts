@@ -2,7 +2,7 @@ import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import type Database from "better-sqlite3";
-import type { Sprint, SprintAgent, SprintReport, SprintAgentReport, SprintBranch, AgentBrief, LandingBrief } from "./types.js";
+import type { Sprint, SprintAgent, SprintReport, SprintAgentReport, SprintBranch, AgentBrief, LandingBrief, CompressionReport } from "./types.js";
 import { parseAgentReport, formatDuration } from "./render.js";
 
 // === Shared git diff parsing ===
@@ -553,4 +553,214 @@ export async function startSprint(opts: {
   }
 
   return { name: opts.name, spawned };
+}
+
+// === Compression pipeline ===
+//
+//  COMPRESSION FLOW:
+//  ─────────────────
+//  1. createStagingBranch() — create staging/{sprint} from main
+//  2. mergeAgentsToStaging() — merge all agent branches into staging
+//  3. spawnCondenser() — spawn condenser agent on staging worktree
+//  4. (condenser works, time-boxed to 10 min)
+//  5. buildCompressionReport() — measure before/after LOC
+//  6. squashMergeToMain() — squash-merge staging to main
+//
+
+const CONDENSER_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Create a staging branch from main for the sprint.
+ * Returns the branch name.
+ */
+export function createStagingBranch(projectDir: string, sprintName: string): string {
+  const branch = `staging/${sprintName}`;
+  try {
+    execSync(`git branch -D ${branch}`, { cwd: projectDir, stdio: "pipe" });
+  } catch { /* branch didn't exist */ }
+  execSync(`git branch ${branch} main`, { cwd: projectDir, stdio: "pipe" });
+  return branch;
+}
+
+/**
+ * Merge all agent branches into the staging branch.
+ * Returns list of successfully merged handles and any that had conflicts.
+ * Conflict markers are left in place for the condenser to resolve.
+ */
+export async function mergeAgentsToStaging(
+  projectDir: string,
+  stagingBranch: string,
+  agentHandles: string[],
+  db: Database.Database,
+): Promise<{ merged: string[]; conflicted: string[] }> {
+  const { getSpawn } = await import("./spawner.js");
+
+  // Checkout staging branch
+  execSync(`git checkout ${stagingBranch}`, { cwd: projectDir, stdio: "pipe" });
+
+  const merged: string[] = [];
+  const conflicted: string[] = [];
+
+  for (const handle of agentHandles) {
+    const spawn = getSpawn(db, handle);
+    if (!spawn?.branch) continue;
+
+    try {
+      execSync(`git merge ${spawn.branch} --no-edit`, {
+        cwd: projectDir,
+        encoding: "utf-8",
+        stdio: "pipe",
+      });
+      merged.push(handle);
+    } catch {
+      // Merge conflict — commit with markers for condenser to resolve
+      try {
+        execSync(`git add -A && git commit -m "merge ${handle} (conflicts for condenser)"`, {
+          cwd: projectDir,
+          stdio: "pipe",
+          shell: "/bin/bash",
+        });
+        conflicted.push(handle);
+      } catch {
+        // If we can't even commit, abort the merge
+        try { execSync("git merge --abort", { cwd: projectDir, stdio: "pipe" }); } catch { /* */ }
+      }
+    }
+  }
+
+  // Return to main
+  execSync("git checkout main", { cwd: projectDir, stdio: "pipe" });
+
+  return { merged, conflicted };
+}
+
+/**
+ * Spawn the condenser agent on the staging branch.
+ * Returns the condenser's handle and a timeout that will kill it.
+ */
+export async function spawnCondenser(opts: {
+  sprintName: string;
+  stagingBranch: string;
+  projectDir: string;
+  serverUrl: string;
+  db: Database.Database;
+  beforeLines: number;
+}): Promise<{ handle: string; pid: number }> {
+  const { spawnAgent } = await import("./spawner.js");
+  const { createAgent, getAgent } = await import("./agents.js");
+  const { normalizeHandle } = await import("./agents.js");
+  const { generateKey, storeKey } = await import("./auth.js");
+  const { loadIdentity } = await import("./identities.js");
+
+  const handle = normalizeHandle(`condenser-${opts.sprintName}`);
+
+  // Create agent record if needed
+  if (!getAgent(opts.db, handle)) {
+    createAgent(opts.db, {
+      handle: handle.slice(1),
+      name: "condenser",
+      role: "worker",
+      mission: `Compress sprint ${opts.sprintName}`,
+    });
+  }
+
+  // Load condenser identity
+  let identity;
+  try {
+    identity = loadIdentity("condenser", opts.projectDir);
+  } catch {
+    throw new Error("Condenser identity not found. Create identities/condenser.md first.");
+  }
+
+  const apiKey = generateKey();
+  storeKey(opts.db, apiKey, handle);
+
+  const mission = `Compress the code on branch ${opts.stagingBranch}. ` +
+    `Baseline: +${opts.beforeLines} lines vs main. ` +
+    `Goal: same tests passing, fewer lines. ` +
+    `Work directly on this branch — do not create new branches.`;
+
+  const result = spawnAgent(opts.db, {
+    handle,
+    mission,
+    apiKey,
+    serverUrl: opts.serverUrl,
+    projectDir: opts.projectDir,
+    identity,
+  });
+
+  // Register condenser as sprint agent
+  opts.db.prepare(
+    "INSERT OR IGNORE INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)"
+  ).run(opts.sprintName, handle, "condenser", mission);
+
+  // Time-box: kill after 10 minutes
+  setTimeout(async () => {
+    const { isProcessAlive, killAgent } = await import("./spawner.js");
+    if (isProcessAlive(result.pid)) {
+      try {
+        killAgent(opts.db, handle, opts.projectDir);
+      } catch { /* already dead */ }
+    }
+  }, CONDENSER_TIMEOUT_MS);
+
+  return { handle, pid: result.pid };
+}
+
+/**
+ * Build a compression report by comparing staging branch LOC to pre-compression baseline.
+ */
+export async function buildCompressionReport(
+  projectDir: string,
+  stagingBranch: string,
+  beforeLines: number,
+  db: Database.Database,
+  condenserHandle: string,
+): Promise<CompressionReport> {
+  const { getSpawn } = await import("./spawner.js");
+
+  const stats = parseNumstat(projectDir, stagingBranch);
+  const afterLines = stats ? stats.additions - stats.deletions : beforeLines;
+
+  const condenserSpawn = getSpawn(db, condenserHandle);
+  const condenserRuntime = condenserSpawn?.started_at
+    ? formatDuration(condenserSpawn.started_at, condenserSpawn.stopped_at)
+    : null;
+
+  const ratio = beforeLines > 0
+    ? Math.max(0, (beforeLines - afterLines) / beforeLines)
+    : 0;
+
+  return {
+    beforeLines,
+    afterLines: Math.max(0, afterLines),
+    ratio,
+    condenserExitCode: condenserSpawn?.exit_code ?? null,
+    condenserRuntime,
+  };
+}
+
+/**
+ * Squash-merge the staging branch into main as a single commit.
+ */
+export function squashMergeToMain(
+  projectDir: string,
+  stagingBranch: string,
+  sprintName: string,
+  goal: string,
+): void {
+  execSync(`git merge --squash ${stagingBranch}`, {
+    cwd: projectDir,
+    stdio: "pipe",
+  });
+
+  execSync(`git commit -m "feat: ${goal} (sprint: ${sprintName})"`, {
+    cwd: projectDir,
+    stdio: "pipe",
+  });
+
+  // Clean up staging branch
+  try {
+    execSync(`git branch -D ${stagingBranch}`, { cwd: projectDir, stdio: "pipe" });
+  } catch { /* best effort */ }
 }
