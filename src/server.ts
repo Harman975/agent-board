@@ -10,7 +10,14 @@ import { getFeed, getBriefing, setChannelPriority, listChannelPriorities } from 
 import { pushBundle, fetchBundle, listDagCommits, getLeaves, getChildren, diffCommits, promoteCommit, dagExists, getDagSummary } from "./gitdag.js";
 import { createTeam, getTeam, listTeams, addMember, removeMember, updateTeam } from "./teams.js";
 import { createRoute, listRoutes, updateRoute } from "./routes.js";
-import { parseNumstat, type NumstatResult, startSprint, uniqueSprintName, type AgentSpec } from "./sprint-orchestrator.js";
+import {
+  parseNumstat,
+  type NumstatResult,
+  startSprint,
+  uniqueSprintName,
+  buildLandingBrief,
+  type AgentSpec,
+} from "./sprint-orchestrator.js";
 import { getSpawn, listSpawns, isProcessAlive, killAgent, mergeAgent, writeDirective } from "./spawner.js";
 import { decompose, analyzeImports } from "./decomposer.js";
 import type { ApiKey, Sprint, SprintAgent } from "./types.js";
@@ -580,7 +587,9 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
     const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as Sprint | undefined;
     if (!sprint) return null;
 
-    const sprintAgents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(sprintName) as SprintAgent[];
+    const sprintAgents = db.prepare(
+      "SELECT * FROM sprint_agents WHERE sprint_name = ? AND (identity_name IS NULL OR identity_name != 'condenser')"
+    ).all(sprintName) as SprintAgent[];
     const buckets = inferAllBuckets({ db, sprintName });
     const spawns = listSpawns(db);
 
@@ -598,6 +607,9 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
         bucket: buckets.get(sa.agent_handle) ?? "planning",
         identity: sa.identity_name,
         mission: sa.mission ?? "",
+        track: sa.track ?? null,
+        approachGroup: sa.approach_group ?? null,
+        approachLabel: sa.approach_label ?? null,
         branch: spawn?.branch ?? null,
         alive,
         stopped: spawn ? !!spawn.stopped_at || !alive : true,
@@ -622,6 +634,7 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
       name: sprint.name,
       goal: sprint.goal,
       createdAt: sprint.created_at,
+      status: sprint.status,
       sprint,
       agents,
       totals,
@@ -632,7 +645,7 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
 
   app.get("/data/sprint/latest", (c) => {
     const row = db.prepare(
-      "SELECT * FROM sprints WHERE status = 'running' ORDER BY created_at DESC LIMIT 1"
+      "SELECT * FROM sprints WHERE status IN ('running', 'compressing', 'ready') ORDER BY created_at DESC LIMIT 1"
     ).get() as Sprint | undefined;
     if (!row) {
       return c.json(null);
@@ -688,47 +701,74 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
 
   // === GET /data/sprint/:name/brief — landing brief for a sprint ===
 
-  app.get("/data/sprint/:name/brief", (c) => {
+  app.get("/data/sprint/:name/brief", async (c) => {
     const sprintName = c.req.param("name");
-    const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as Sprint | undefined;
-    if (!sprint) return c.json({ error: "Sprint not found" }, 404);
+    if (!projectDir) {
+      const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as Sprint | undefined;
+      if (!sprint) return c.json({ error: "Sprint not found" }, 404);
 
-    const sprintAgents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(sprintName) as SprintAgent[];
-    const spawns = listSpawns(db);
+      const sprintAgents = db.prepare(
+        "SELECT * FROM sprint_agents WHERE sprint_name = ? AND (identity_name IS NULL OR identity_name != 'condenser')"
+      ).all(sprintName) as SprintAgent[];
+      const spawns = listSpawns(db);
 
-    const agents = sprintAgents.map((sa) => {
-      const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
-      const alive = spawn && !spawn.stopped_at ? isProcessAlive(spawn.pid) : false;
-      const stats = spawn?.branch ? getCachedNumstat(spawn.branch) : null;
+      const agents = sprintAgents.map((sa) => {
+        const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
+        const alive = spawn && !spawn.stopped_at ? isProcessAlive(spawn.pid) : false;
 
-      const lastPost = db.prepare(
-        "SELECT content FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 1"
-      ).get(sa.agent_handle) as { content: string } | undefined;
+        const recentPosts = db.prepare(
+          "SELECT content, created_at FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 3"
+        ).all(sa.agent_handle) as { content: string; created_at: string }[];
 
-      return {
-        handle: sa.agent_handle,
-        identity: sa.identity_name,
-        mission: sa.mission,
-        branch: spawn?.branch || null,
-        alive,
-        stopped: spawn ? !!spawn.stopped_at || !alive : true,
-        exitCode: spawn?.exit_code ?? null,
-        additions: stats?.additions ?? 0,
-        deletions: stats?.deletions ?? 0,
-        filesChanged: stats?.filesChanged ?? 0,
-        lastPost: lastPost?.content || null,
-      };
-    });
+        let status: "passed" | "crashed" | "running";
+        if (alive) status = "running";
+        else if (spawn?.exit_code === 0) status = "passed";
+        else status = "crashed";
 
-    const escalationCount = (db.prepare(
-      "SELECT COUNT(*) as count FROM posts WHERE channel = '#escalations' AND created_at >= ?"
-    ).get(sprint.created_at) as { count: number }).count;
+        return {
+          handle: sa.agent_handle,
+          status,
+          report: null,
+          lastPosts: recentPosts,
+          exitCode: spawn?.exit_code ?? null,
+          runtime: null,
+          branch: spawn?.branch ?? null,
+          testCount: null,
+          mission: sa.mission,
+          track: sa.track ?? null,
+          approachGroup: sa.approach_group ?? null,
+          approachLabel: sa.approach_label ?? null,
+          commitCount: 0,
+          lastDagPushMessage: null,
+          lastPost: recentPosts[0]?.content ?? null,
+        };
+      });
 
-    return c.json({
-      sprint,
-      agents,
-      escalations: escalationCount,
-    });
+      const escalationCount = (db.prepare(
+        "SELECT COUNT(*) as count FROM posts WHERE channel = '#escalations' AND created_at >= ?"
+      ).get(sprint.created_at) as { count: number }).count;
+
+      return c.json({
+        sprint,
+        agents,
+        summary: {
+          passed: agents.filter((a) => a.status === "passed").length,
+          crashed: agents.filter((a) => a.status === "crashed").length,
+          running: agents.filter((a) => a.status === "running").length,
+          totalTests: 0,
+        },
+        conflicts: [],
+        testsPassOnMain: true,
+        escalations: escalationCount,
+      });
+    }
+
+    try {
+      const brief = await buildLandingBrief(sprintName, resolvedProjectDir);
+      return c.json(brief);
+    } catch (err: any) {
+      return c.json({ error: err.message }, err.message.includes("not found") ? 404 : 500);
+    }
   });
 
   // Actions: kill, steer, merge
@@ -979,4 +1019,3 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
 
   return app;
 }
-

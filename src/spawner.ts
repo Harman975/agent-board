@@ -7,6 +7,7 @@ import { createChannel, getChannel } from "./channels.js";
 import { normalizeHandle, getAgent } from "./agents.js";
 import { generateKey, storeKey } from "./auth.js";
 import type { Identity } from "./types.js";
+import { getDb } from "./db.js";
 
 // === Types ===
 
@@ -30,6 +31,8 @@ interface SpawnOptions {
   foreground?: boolean;
   identity?: Identity;
   scope?: string[];
+  branch?: string;
+  worktreePath?: string;
 }
 
 // Executor interface for dependency injection (testability)
@@ -101,6 +104,46 @@ function createWorktree(projectDir: string, handle: string): { worktreePath: str
   }
 
   return { worktreePath, branch };
+}
+
+function createExplicitWorktree(
+  projectDir: string,
+  branch: string,
+  worktreePath: string,
+): { worktreePath: string; branch: string } {
+  ensureWorktreeDir(projectDir);
+
+  if (!fs.existsSync(worktreePath)) {
+    try {
+      execSync(`git rev-parse --verify ${branch}`, { cwd: projectDir, stdio: "pipe" });
+      execSync(`git worktree add "${worktreePath}" ${branch}`, { cwd: projectDir, stdio: "pipe" });
+    } catch {
+      execSync(`git worktree add -b ${branch} "${worktreePath}" main`, { cwd: projectDir, stdio: "pipe" });
+    }
+  }
+
+  const nodeModulesSrc = path.join(projectDir, "node_modules");
+  const nodeModulesDst = path.join(worktreePath, "node_modules");
+  if (fs.existsSync(nodeModulesSrc) && !fs.existsSync(nodeModulesDst)) {
+    fs.symlinkSync(nodeModulesSrc, nodeModulesDst, "dir");
+  }
+
+  return { worktreePath, branch };
+}
+
+function prepareWorktree(opts: {
+  projectDir: string;
+  handle: string;
+  branch?: string;
+  worktreePath?: string;
+}): { worktreePath: string; branch: string } {
+  if (opts.branch || opts.worktreePath) {
+    if (!opts.branch || !opts.worktreePath) {
+      throw new Error("Custom worktree spawning requires both branch and worktreePath");
+    }
+    return createExplicitWorktree(opts.projectDir, opts.branch, opts.worktreePath);
+  }
+  return createWorktree(opts.projectDir, opts.handle);
 }
 
 /**
@@ -346,7 +389,15 @@ export function spawnAgent(
 export function respawnAgent(
   db: Database.Database,
   handle: string,
-  opts: { mission?: string; serverUrl: string; projectDir: string; foreground?: boolean },
+  opts: {
+    mission?: string;
+    serverUrl: string;
+    projectDir: string;
+    foreground?: boolean;
+    branch?: string;
+    worktreePath?: string;
+    identity?: Identity;
+  },
   executor: Executor = defaultExecutor
 ): { pid: number; worktreePath: string; branch: string; child?: ChildProcess } {
   handle = normalizeHandle(handle);
@@ -380,6 +431,9 @@ export function respawnAgent(
     serverUrl: opts.serverUrl,
     projectDir: opts.projectDir,
     foreground: opts.foreground,
+    branch: opts.branch,
+    worktreePath: opts.worktreePath,
+    identity: opts.identity,
     isRespawn: !!spawn,
   }, executor);
 
@@ -402,7 +456,12 @@ function _spawnProcess(
     throw new Error("Claude Code CLI not found. Install it first: https://docs.anthropic.com/en/docs/claude-code");
   }
 
-  const { worktreePath, branch } = createWorktree(opts.projectDir, handle);
+  const { worktreePath, branch } = prepareWorktree({
+    projectDir: opts.projectDir,
+    handle,
+    branch: opts.branch,
+    worktreePath: opts.worktreePath,
+  });
 
   const claudeMd = generateAgentClaudeMd({
     handle,
@@ -505,7 +564,20 @@ const DIRECTIVES_EMPTY = "No active directives.";
 function getWorktreeClaudeMdPath(projectDir: string, handle: string): string {
   handle = normalizeHandle(handle);
   const worktreePath = path.join(projectDir, ".worktrees", handle);
-  return path.join(worktreePath, "CLAUDE.md");
+  const defaultPath = path.join(worktreePath, "CLAUDE.md");
+  if (fs.existsSync(defaultPath)) return defaultPath;
+
+  const db = getDb(projectDir);
+  try {
+    const spawn = getSpawn(db, handle);
+    if (spawn?.worktree_path) {
+      return path.join(spawn.worktree_path, "CLAUDE.md");
+    }
+  } finally {
+    db.close();
+  }
+
+  return defaultPath;
 }
 
 export function writeDirective(projectDir: string, handle: string, directive: string): void {

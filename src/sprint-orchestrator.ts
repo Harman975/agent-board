@@ -2,7 +2,17 @@ import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import type Database from "better-sqlite3";
-import type { Sprint, SprintAgent, SprintReport, SprintAgentReport, SprintBranch, AgentBrief, LandingBrief, CompressionReport } from "./types.js";
+import type {
+  Sprint,
+  SprintAgent,
+  SprintReport,
+  SprintAgentReport,
+  SprintBranch,
+  AgentBrief,
+  LandingBrief,
+  CompressionReport,
+  SprintCompression,
+} from "./types.js";
 import { parseAgentReport, formatDuration } from "./render.js";
 
 // === Shared git diff parsing ===
@@ -64,7 +74,11 @@ export interface PreFlightResult {
 
 export async function runPreFlight(
   projectDir: string,
-  opts: { skipTests?: boolean; agentHandles?: string[] } = {}
+  opts: {
+    skipTests?: boolean;
+    agentHandles?: string[];
+    approachGroupsByHandle?: Map<string, string | null>;
+  } = {}
 ): Promise<PreFlightResult> {
   const { listSpawns, isProcessAlive } = await import("./spawner.js");
   const { getDb } = await import("./db.js");
@@ -122,6 +136,10 @@ export async function runPreFlight(
   const conflicts: string[] = [];
   for (const [file, agents] of fileCounts) {
     if (agents.length > 1) {
+      const firstGroup = opts.approachGroupsByHandle?.get(agents[0]) ?? null;
+      if (firstGroup && agents.every((agent) => opts.approachGroupsByHandle?.get(agent) === firstGroup)) {
+        continue;
+      }
       conflicts.push(`${file} (${agents.join(", ")})`);
     }
   }
@@ -136,6 +154,16 @@ export async function runPreFlight(
 
 // === Sprint report protocol — injected into identity for sprint agents ===
 
+export const SPRINT_CLARITY_PROTOCOL = `
+
+## Sprint Clarity Protocol
+
+- Treat your branch as one hypothesis, not the final answer.
+- Reuse or extend existing code before creating new files or abstractions.
+- Keep the surviving diff as small as possible.
+- If you add surface area, be explicit about why the existing code was insufficient.
+`;
+
 export const SPRINT_REPORT_PROTOCOL = `
 
 ## Completion Report Protocol
@@ -143,6 +171,11 @@ export const SPRINT_REPORT_PROTOCOL = `
 When you finish your work, post a structured completion report to #work with this exact format:
 
 REPORT: <one-line summary of what you built/changed>
+HYPOTHESIS: <what idea or route you were testing>
+REUSED: <what existing code, patterns, or modules you kept or extended>
+WHY NOT EXISTING CODE: <why patching or extending the current code was not enough>
+WHY SURVIVES: <why this approach deserves to remain after synthesis>
+NEW FILES: <which new files were introduced, or "none">
 ARCHITECTURE: <how it's designed, component boundaries, key decisions>
 DATA FLOW: <input → transform → output, how data moves through your changes>
 EDGE CASES: <what edge cases you handled, what's not handled>
@@ -150,6 +183,117 @@ TESTS: <test count, coverage areas, what scenarios are tested>
 
 This report will be shown to the CEO in the sprint finish view.
 `;
+
+export function decorateSprintMission(
+  mission: string,
+  opts: { includeReportProtocol?: boolean } = {},
+): string {
+  const sections = [mission.trim(), SPRINT_CLARITY_PROTOCOL.trim()];
+  if (opts.includeReportProtocol) {
+    sections.push(SPRINT_REPORT_PROTOCOL.trim());
+  }
+  return sections.filter(Boolean).join("\n\n");
+}
+
+function getBranchCommitCount(projectDir: string, branch: string | null): number {
+  if (!branch) return 0;
+  try {
+    const raw = execSync(`git rev-list --count main..${branch}`, {
+      cwd: projectDir,
+      encoding: "utf-8",
+      stdio: "pipe",
+    }).trim();
+    return parseInt(raw, 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function getLastDagPushMessage(db: Database.Database, handle: string): string | null {
+  const row = db.prepare(
+    "SELECT message FROM dag_commits WHERE agent_handle = ? ORDER BY created_at DESC LIMIT 1"
+  ).get(handle) as { message: string } | undefined;
+  return row?.message ?? null;
+}
+
+function getWorkerSprintAgents(db: Database.Database, sprintName: string): SprintAgent[] {
+  return db.prepare(
+    "SELECT * FROM sprint_agents WHERE sprint_name = ? AND (identity_name IS NULL OR identity_name != 'condenser')"
+  ).all(sprintName) as SprintAgent[];
+}
+
+function getSprintCompression(db: Database.Database, sprintName: string): SprintCompression | null {
+  return db.prepare(
+    "SELECT * FROM sprint_compressions WHERE sprint_name = ?"
+  ).get(sprintName) as SprintCompression | undefined ?? null;
+}
+
+function upsertSprintCompression(
+  db: Database.Database,
+  sprintName: string,
+  updates: Partial<Omit<SprintCompression, "sprint_name">>
+): SprintCompression {
+  const current = getSprintCompression(db, sprintName);
+  const next: SprintCompression = {
+    sprint_name: sprintName,
+    status: updates.status ?? current?.status ?? "pending",
+    staging_branch: updates.staging_branch ?? current?.staging_branch ?? null,
+    staging_worktree_path: updates.staging_worktree_path ?? current?.staging_worktree_path ?? null,
+    condenser_handle: updates.condenser_handle ?? current?.condenser_handle ?? null,
+    before_additions: updates.before_additions ?? current?.before_additions ?? 0,
+    before_deletions: updates.before_deletions ?? current?.before_deletions ?? 0,
+    before_files_changed: updates.before_files_changed ?? current?.before_files_changed ?? 0,
+    after_additions: updates.after_additions ?? current?.after_additions ?? null,
+    after_deletions: updates.after_deletions ?? current?.after_deletions ?? null,
+    after_files_changed: updates.after_files_changed ?? current?.after_files_changed ?? null,
+    error_message: updates.error_message ?? current?.error_message ?? null,
+    bypass_reason: updates.bypass_reason ?? current?.bypass_reason ?? null,
+    started_at: updates.started_at ?? current?.started_at ?? null,
+    finished_at: updates.finished_at ?? current?.finished_at ?? null,
+  };
+
+  db.prepare(`
+    INSERT INTO sprint_compressions (
+      sprint_name, status, staging_branch, staging_worktree_path, condenser_handle,
+      before_additions, before_deletions, before_files_changed,
+      after_additions, after_deletions, after_files_changed,
+      error_message, bypass_reason, started_at, finished_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(sprint_name) DO UPDATE SET
+      status = excluded.status,
+      staging_branch = excluded.staging_branch,
+      staging_worktree_path = excluded.staging_worktree_path,
+      condenser_handle = excluded.condenser_handle,
+      before_additions = excluded.before_additions,
+      before_deletions = excluded.before_deletions,
+      before_files_changed = excluded.before_files_changed,
+      after_additions = excluded.after_additions,
+      after_deletions = excluded.after_deletions,
+      after_files_changed = excluded.after_files_changed,
+      error_message = excluded.error_message,
+      bypass_reason = excluded.bypass_reason,
+      started_at = excluded.started_at,
+      finished_at = excluded.finished_at
+  `).run(
+    next.sprint_name,
+    next.status,
+    next.staging_branch,
+    next.staging_worktree_path,
+    next.condenser_handle,
+    next.before_additions,
+    next.before_deletions,
+    next.before_files_changed,
+    next.after_additions,
+    next.after_deletions,
+    next.after_files_changed,
+    next.error_message,
+    next.bypass_reason,
+    next.started_at,
+    next.finished_at,
+  );
+
+  return getSprintCompression(db, sprintName)!;
+}
 
 // === Shared sprint data gathering ===
 //
@@ -160,6 +304,9 @@ This report will be shown to the CEO in the sprint finish view.
 interface GatheredAgentData {
   handle: string;
   mission: string | null;
+  track: string | null;
+  approachGroup: string | null;
+  approachLabel: string | null;
   spawn: import("./spawner.js").SpawnRecord | undefined;
   alive: boolean;
   stopped: boolean;
@@ -167,6 +314,8 @@ interface GatheredAgentData {
   lastPost: string | null;
   lastPosts: { content: string; created_at: string }[];
   stats: NumstatResult | null;
+  commitCount: number;
+  lastDagPushMessage: string | null;
 }
 
 async function gatherSprintData(
@@ -184,8 +333,9 @@ async function gatherSprintData(
     throw new Error(`Sprint not found: ${sprintName}`);
   }
 
-  const sprintAgents = db.prepare("SELECT * FROM sprint_agents WHERE sprint_name = ?").all(sprintName) as SprintAgent[];
+  const sprintAgents = getWorkerSprintAgents(db, sprintName);
   const spawns = listSpawns(db);
+  const approachGroupsByHandle = new Map(sprintAgents.map((sa) => [sa.agent_handle, sa.approach_group]));
 
   const escalationCount = (db.prepare(
     "SELECT COUNT(*) as count FROM posts WHERE channel = '#escalations' AND created_at >= ?"
@@ -223,6 +373,9 @@ async function gatherSprintData(
     agentData.push({
       handle: sa.agent_handle,
       mission: sa.mission,
+      track: sa.track,
+      approachGroup: sa.approach_group,
+      approachLabel: sa.approach_label,
       spawn,
       alive,
       stopped,
@@ -230,15 +383,22 @@ async function gatherSprintData(
       lastPost: lastPosts[0]?.content ?? null,
       lastPosts,
       stats,
+      commitCount: getBranchCommitCount(projectDir, spawn?.branch ?? null),
+      lastDagPushMessage: getLastDagPushMessage(db, sa.agent_handle),
     });
   }
 
+  const handles = sprintAgents.map((sa) => sa.agent_handle);
+  const preflight = await runPreFlight(projectDir, {
+    skipTests: opts.skipTests ?? false,
+    agentHandles: handles,
+    approachGroupsByHandle,
+  });
+  const compression = getSprintCompression(db, sprintName);
+
   db.close();
 
-  const handles = sprintAgents.map((sa) => sa.agent_handle);
-  const preflight = await runPreFlight(projectDir, { skipTests: opts.skipTests ?? false, agentHandles: handles });
-
-  return { sprint, agentData, escalationCount, preflight };
+  return { sprint, agentData, escalationCount, preflight, compression };
 }
 
 function countTests(testsStr: string | null): number | null {
@@ -254,7 +414,7 @@ export async function buildLandingBrief(
   sprintName: string,
   projectDir: string,
 ): Promise<LandingBrief> {
-  const { sprint, agentData, preflight } = await gatherSprintData(sprintName, projectDir, { skipTests: false });
+  const { sprint, agentData, preflight, compression } = await gatherSprintData(sprintName, projectDir, { skipTests: false });
 
   let totalTests = 0;
   const agents: AgentBrief[] = agentData.map((a) => {
@@ -280,8 +440,18 @@ export async function buildLandingBrief(
       branch: a.spawn?.branch ?? null,
       testCount,
       mission: a.mission,
+      track: a.track,
+      approachGroup: a.approachGroup,
+      approachLabel: a.approachLabel,
+      commitCount: a.commitCount,
+      lastDagPushMessage: a.lastDagPushMessage,
     };
   });
+
+  const { getDb } = await import("./db.js");
+  const db = getDb(projectDir);
+  const compressionReport = await buildCompressionReport(projectDir, db, sprintName);
+  db.close();
 
   return {
     sprint,
@@ -294,6 +464,7 @@ export async function buildLandingBrief(
     },
     conflicts: preflight.conflicts,
     testsPassOnMain: preflight.testsPass,
+    compression: compression ? compressionReport ?? undefined : undefined,
   };
 }
 
@@ -349,7 +520,7 @@ export async function buildSprintReport(
   projectDir: string,
   detail = false,
 ): Promise<SprintReport> {
-  const { sprint, agentData, escalationCount, preflight } = await gatherSprintData(sprintName, projectDir, { skipTests: true });
+  const { sprint, agentData, escalationCount, preflight, compression } = await gatherSprintData(sprintName, projectDir, { skipTests: true });
 
   let totalAdditions = 0;
   let totalDeletions = 0;
@@ -376,8 +547,18 @@ export async function buildSprintReport(
       mission: a.mission,
       lastPost: a.lastPost,
       report: a.report,
+      track: a.track,
+      approachGroup: a.approachGroup,
+      approachLabel: a.approachLabel,
+      commitCount: a.commitCount,
+      lastDagPushMessage: a.lastDagPushMessage,
     };
   });
+
+  const { getDb } = await import("./db.js");
+  const db = getDb(projectDir);
+  const compressionReport = await buildCompressionReport(projectDir, db, sprintName);
+  db.close();
 
   return {
     sprint,
@@ -386,6 +567,7 @@ export async function buildSprintReport(
     conflicts: preflight.conflicts,
     escalations: escalationCount,
     mergeOrder: preflight.mergeOrder,
+    compression: compression ? compressionReport ?? undefined : undefined,
   };
 }
 
@@ -425,6 +607,9 @@ export interface AgentSpec {
   identity?: string;
   mission: string;
   scope?: string[];
+  track?: string;
+  approachGroup?: string;
+  approachLabel?: string;
 }
 
 export interface StartSprintResult {
@@ -437,15 +622,18 @@ export interface StartSprintResult {
  * Throws on overlap.
  */
 export function validateDisjointScopes(specs: AgentSpec[]): void {
-  const fileOwners = new Map<string, string>();
+  const fileOwners = new Map<string, { handle: string; approachGroup: string | null }>();
   const overlaps: string[] = [];
   for (const spec of specs) {
     for (const file of spec.scope ?? []) {
       const existingOwner = fileOwners.get(file);
       if (existingOwner) {
-        overlaps.push(`${file} claimed by both ${existingOwner} and ${spec.handle}`);
+        if (existingOwner.approachGroup && existingOwner.approachGroup === spec.approachGroup) {
+          continue;
+        }
+        overlaps.push(`${file} claimed by both ${existingOwner.handle} and ${spec.handle}`);
       } else {
-        fileOwners.set(file, spec.handle);
+        fileOwners.set(file, { handle: spec.handle, approachGroup: spec.approachGroup ?? null });
       }
     }
   }
@@ -503,7 +691,9 @@ export async function startSprint(opts: {
         });
       }
 
-      let mission = spec.mission;
+      let mission = decorateSprintMission(spec.mission, {
+        includeReportProtocol: !spec.identity,
+      });
       let identity = undefined;
 
       if (spec.identity) {
@@ -514,7 +704,9 @@ export async function startSprint(opts: {
           const identityPath = path.join(opts.projectDir, "identities", `${spec.identity}.md`);
           if (fs.existsSync(identityPath)) {
             const identityContent = fs.readFileSync(identityPath, "utf-8");
-            mission = `[Identity: ${spec.identity}]\n${identityContent}\n\n${mission}`;
+            mission = `[Identity: ${spec.identity}]\n${identityContent}\n\n${decorateSprintMission(spec.mission, {
+              includeReportProtocol: true,
+            })}`;
           } else {
             throw new Error(`Identity not found: ${spec.identity}`);
           }
@@ -535,8 +727,18 @@ export async function startSprint(opts: {
       });
 
       opts.db.prepare(
-        "INSERT INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)"
-      ).run(opts.name, handle, spec.identity || null, spec.mission);
+        `INSERT INTO sprint_agents (
+          sprint_name, agent_handle, identity_name, mission, track, approach_group, approach_label
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        opts.name,
+        handle,
+        spec.identity || null,
+        spec.mission,
+        spec.track ?? null,
+        spec.approachGroup ?? null,
+        spec.approachLabel ?? null,
+      );
 
       spawned.push(handle);
       opts.onSpawn?.(handle, result.pid, result.branch);
@@ -569,6 +771,33 @@ export async function startSprint(opts: {
 
 const CONDENSER_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
+function currentUtcIso(): string {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function elapsedMsSince(timestamp: string | null): number | null {
+  if (!timestamp) return null;
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) return null;
+  return Date.now() - parsed;
+}
+
+function ensureStagingRoot(projectDir: string): string {
+  const dir = path.join(projectDir, ".worktrees");
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+function ensureNodeModulesSymlink(projectDir: string, worktreePath: string): void {
+  const nodeModulesSrc = path.join(projectDir, "node_modules");
+  const nodeModulesDst = path.join(worktreePath, "node_modules");
+  if (fs.existsSync(nodeModulesSrc) && !fs.existsSync(nodeModulesDst)) {
+    fs.symlinkSync(nodeModulesSrc, nodeModulesDst, "dir");
+  }
+}
+
 /**
  * Create a staging branch from main for the sprint.
  * Returns the branch name.
@@ -576,27 +805,42 @@ const CONDENSER_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 export function createStagingBranch(projectDir: string, sprintName: string): string {
   const branch = `staging/${sprintName}`;
   try {
-    execSync(`git branch -D ${branch}`, { cwd: projectDir, stdio: "pipe" });
-  } catch { /* branch didn't exist */ }
-  execSync(`git branch ${branch} main`, { cwd: projectDir, stdio: "pipe" });
+    execSync(`git rev-parse --verify ${branch}`, { cwd: projectDir, stdio: "pipe" });
+  } catch {
+    execSync(`git branch ${branch} main`, { cwd: projectDir, stdio: "pipe" });
+  }
   return branch;
 }
 
+export function ensureStagingWorktree(
+  projectDir: string,
+  sprintName: string,
+): { branch: string; worktreePath: string } {
+  const branch = createStagingBranch(projectDir, sprintName);
+  const worktreePath = path.join(ensureStagingRoot(projectDir), `staging-${sprintName}`);
+
+  if (!fs.existsSync(worktreePath)) {
+    execSync(`git worktree add "${worktreePath}" ${branch}`, {
+      cwd: projectDir,
+      stdio: "pipe",
+    });
+  }
+
+  ensureNodeModulesSymlink(projectDir, worktreePath);
+  return { branch, worktreePath };
+}
+
 /**
- * Merge all agent branches into the staging branch.
+ * Merge all agent branches into the staging worktree.
  * Returns list of successfully merged handles and any that had conflicts.
  * Conflict markers are left in place for the condenser to resolve.
  */
 export async function mergeAgentsToStaging(
-  projectDir: string,
-  stagingBranch: string,
+  stagingWorktreePath: string,
   agentHandles: string[],
   db: Database.Database,
 ): Promise<{ merged: string[]; conflicted: string[] }> {
   const { getSpawn } = await import("./spawner.js");
-
-  // Checkout staging branch
-  execSync(`git checkout ${stagingBranch}`, { cwd: projectDir, stdio: "pipe" });
 
   const merged: string[] = [];
   const conflicted: string[] = [];
@@ -607,7 +851,7 @@ export async function mergeAgentsToStaging(
 
     try {
       execSync(`git merge ${spawn.branch} --no-edit`, {
-        cwd: projectDir,
+        cwd: stagingWorktreePath,
         encoding: "utf-8",
         stdio: "pipe",
       });
@@ -615,21 +859,18 @@ export async function mergeAgentsToStaging(
     } catch {
       // Merge conflict — commit with markers for condenser to resolve
       try {
-        execSync(`git add -A && git commit -m "merge ${handle} (conflicts for condenser)"`, {
-          cwd: projectDir,
+        execSync("git add -A", { cwd: stagingWorktreePath, stdio: "pipe" });
+        execSync(`git commit -m "merge ${handle} (conflicts for condenser)"`, {
+          cwd: stagingWorktreePath,
           stdio: "pipe",
-          shell: "/bin/bash",
         });
         conflicted.push(handle);
       } catch {
         // If we can't even commit, abort the merge
-        try { execSync("git merge --abort", { cwd: projectDir, stdio: "pipe" }); } catch { /* */ }
+        try { execSync("git merge --abort", { cwd: stagingWorktreePath, stdio: "pipe" }); } catch { /* */ }
       }
     }
   }
-
-  // Return to main
-  execSync("git checkout main", { cwd: projectDir, stdio: "pipe" });
 
   return { merged, conflicted };
 }
@@ -641,12 +882,13 @@ export async function mergeAgentsToStaging(
 export async function spawnCondenser(opts: {
   sprintName: string;
   stagingBranch: string;
+  stagingWorktreePath: string;
   projectDir: string;
   serverUrl: string;
   db: Database.Database;
   beforeLines: number;
 }): Promise<{ handle: string; pid: number }> {
-  const { spawnAgent } = await import("./spawner.js");
+  const { spawnAgent, respawnAgent, getSpawn } = await import("./spawner.js");
   const { createAgent, getAgent } = await import("./agents.js");
   const { normalizeHandle } = await import("./agents.js");
   const { generateKey, storeKey } = await import("./auth.js");
@@ -675,24 +917,38 @@ export async function spawnCondenser(opts: {
   const apiKey = generateKey();
   storeKey(opts.db, apiKey, handle);
 
-  const mission = `Compress the code on branch ${opts.stagingBranch}. ` +
+  const mission = `Synthesize the competing approaches on branch ${opts.stagingBranch}. ` +
     `Baseline: +${opts.beforeLines} lines vs main. ` +
-    `Goal: same tests passing, fewer lines. ` +
+    `Goal: same tests passing, fewer lines, and one surviving implementation. ` +
     `Work directly on this branch — do not create new branches.`;
 
-  const result = spawnAgent(opts.db, {
-    handle,
-    mission,
-    apiKey,
-    serverUrl: opts.serverUrl,
-    projectDir: opts.projectDir,
-    identity,
-  });
+  const existingSpawn = getSpawn(opts.db, handle);
+  const result = existingSpawn
+    ? respawnAgent(opts.db, handle, {
+      mission,
+      serverUrl: opts.serverUrl,
+      projectDir: opts.projectDir,
+      branch: opts.stagingBranch,
+      worktreePath: opts.stagingWorktreePath,
+      identity,
+    })
+    : spawnAgent(opts.db, {
+      handle,
+      mission,
+      apiKey,
+      serverUrl: opts.serverUrl,
+      projectDir: opts.projectDir,
+      identity,
+      branch: opts.stagingBranch,
+      worktreePath: opts.stagingWorktreePath,
+    });
 
   // Register condenser as sprint agent
   opts.db.prepare(
-    "INSERT OR IGNORE INTO sprint_agents (sprint_name, agent_handle, identity_name, mission) VALUES (?, ?, ?, ?)"
-  ).run(opts.sprintName, handle, "condenser", mission);
+    `INSERT OR IGNORE INTO sprint_agents (
+      sprint_name, agent_handle, identity_name, mission, track, approach_group, approach_label
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(opts.sprintName, handle, "condenser", mission, "synthesis", "__synthesis__", "Condenser");
 
   // Time-box: kill after 10 minutes
   setTimeout(async () => {
@@ -707,36 +963,203 @@ export async function spawnCondenser(opts: {
   return { handle, pid: result.pid };
 }
 
+export async function syncSprintCompressionState(
+  projectDir: string,
+  db: Database.Database,
+  sprintName: string,
+): Promise<SprintCompression | null> {
+  const { getSpawn, isProcessAlive, killAgent } = await import("./spawner.js");
+  const compression = getSprintCompression(db, sprintName);
+  if (!compression || compression.status !== "running" || !compression.condenser_handle) {
+    return compression;
+  }
+
+  let spawn = getSpawn(db, compression.condenser_handle);
+  const timedOut = (elapsedMsSince(compression.started_at ?? spawn?.started_at ?? null) ?? 0) > CONDENSER_TIMEOUT_MS;
+
+  if (spawn && !spawn.stopped_at && isProcessAlive(spawn.pid)) {
+    if (!timedOut) {
+      return compression;
+    }
+    try {
+      killAgent(db, compression.condenser_handle, projectDir);
+    } catch {
+      // Best effort; the status update below still marks the run failed.
+    }
+    spawn = getSpawn(db, compression.condenser_handle);
+  }
+
+  const finalStats = compression.staging_branch ? parseNumstat(projectDir, compression.staging_branch) : null;
+  const nextStatus = timedOut || spawn?.exit_code !== 0 ? "failed" : "ready";
+  const updated = upsertSprintCompression(db, sprintName, {
+    status: nextStatus,
+    after_additions: finalStats?.additions ?? compression.after_additions ?? compression.before_additions,
+    after_deletions: finalStats?.deletions ?? compression.after_deletions ?? compression.before_deletions,
+    after_files_changed: finalStats?.filesChanged ?? compression.after_files_changed ?? compression.before_files_changed,
+    error_message: nextStatus === "failed"
+      ? compression.error_message ?? (timedOut
+        ? `Condenser exceeded ${Math.round(CONDENSER_TIMEOUT_MS / 60000)} minutes and was stopped`
+        : `Condenser exited with code ${spawn?.exit_code ?? "unknown"}`)
+      : null,
+    finished_at: currentUtcIso(),
+  });
+
+  db.prepare("UPDATE sprints SET status = ?, finished_at = ? WHERE name = ?")
+    .run(nextStatus === "ready" ? "ready" : "failed", updated.finished_at, sprintName);
+  return updated;
+}
+
+export interface StartSprintCompressionResult {
+  compression: SprintCompression;
+  launched: boolean;
+  merged: string[];
+  conflicted: string[];
+}
+
+export async function startSprintCompression(opts: {
+  sprintName: string;
+  projectDir: string;
+  serverUrl: string;
+  db: Database.Database;
+}): Promise<StartSprintCompressionResult> {
+  const { listSpawns, isProcessAlive } = await import("./spawner.js");
+
+  const sprint = opts.db.prepare("SELECT * FROM sprints WHERE name = ?").get(opts.sprintName) as Sprint | undefined;
+  if (!sprint) {
+    throw new Error(`Sprint not found: ${opts.sprintName}`);
+  }
+  if (sprint.status === "finished") {
+    throw new Error(`Sprint "${opts.sprintName}" is already finished.`);
+  }
+
+  const workerAgents = getWorkerSprintAgents(opts.db, opts.sprintName);
+  const workerHandles = workerAgents.map((agent) => agent.agent_handle);
+  const spawns = listSpawns(opts.db);
+  const running = workerAgents
+    .map((agent) => spawns.find((spawn) => spawn.agent_handle === agent.agent_handle))
+    .filter((spawn): spawn is NonNullable<typeof spawn> => !!spawn)
+    .filter((spawn) => !spawn.stopped_at && isProcessAlive(spawn.pid))
+    .map((spawn) => spawn.agent_handle);
+
+  if (running.length > 0) {
+    throw new Error(`Sprint "${opts.sprintName}" still has running agents: ${running.join(", ")}`);
+  }
+
+  let compression = await syncSprintCompressionState(opts.projectDir, opts.db, opts.sprintName);
+  if (compression?.status === "ready" || compression?.status === "bypassed") {
+    return { compression, launched: false, merged: [], conflicted: [] };
+  }
+  if (compression?.status === "running") {
+    return { compression, launched: false, merged: [], conflicted: [] };
+  }
+
+  const branch = compression?.staging_branch ?? createStagingBranch(opts.projectDir, opts.sprintName);
+  const worktreePath = compression?.staging_worktree_path ?? ensureStagingWorktree(opts.projectDir, opts.sprintName).worktreePath;
+
+  let merged: string[] = [];
+  let conflicted: string[] = [];
+  if (!compression || compression.status === "pending") {
+    ({ merged, conflicted } = await mergeAgentsToStaging(worktreePath, workerHandles, opts.db));
+  }
+
+  const baseline = parseNumstat(opts.projectDir, branch);
+  compression = upsertSprintCompression(opts.db, opts.sprintName, {
+    status: "running",
+    staging_branch: branch,
+    staging_worktree_path: worktreePath,
+    before_additions: baseline?.additions ?? compression?.before_additions ?? 0,
+    before_deletions: baseline?.deletions ?? compression?.before_deletions ?? 0,
+    before_files_changed: baseline?.filesChanged ?? compression?.before_files_changed ?? 0,
+    after_additions: null,
+    after_deletions: null,
+    after_files_changed: null,
+    error_message: null,
+    bypass_reason: null,
+    started_at: currentUtcIso(),
+    finished_at: null,
+  });
+  opts.db.prepare("UPDATE sprints SET status = 'compressing', finished_at = NULL WHERE name = ?").run(opts.sprintName);
+
+  const beforeLines = Math.max(0, compression.before_additions - compression.before_deletions);
+  const condenser = await spawnCondenser({
+    sprintName: opts.sprintName,
+    stagingBranch: branch,
+    stagingWorktreePath: worktreePath,
+    projectDir: opts.projectDir,
+    serverUrl: opts.serverUrl,
+    db: opts.db,
+    beforeLines,
+  });
+
+  compression = upsertSprintCompression(opts.db, opts.sprintName, {
+    condenser_handle: condenser.handle,
+  });
+
+  return { compression, launched: true, merged, conflicted };
+}
+
+export function bypassSprintCompression(
+  db: Database.Database,
+  sprintName: string,
+  reason: string,
+): SprintCompression {
+  if (!reason.trim()) {
+    throw new Error("A bypass reason is required.");
+  }
+  db.prepare("UPDATE sprints SET status = 'ready' WHERE name = ?").run(sprintName);
+  return upsertSprintCompression(db, sprintName, {
+    status: "bypassed",
+    bypass_reason: reason.trim(),
+    finished_at: currentUtcIso(),
+  });
+}
+
 /**
- * Build a compression report by comparing staging branch LOC to pre-compression baseline.
+ * Build a compression report from the persisted sprint synthesis record.
  */
 export async function buildCompressionReport(
   projectDir: string,
-  stagingBranch: string,
-  beforeLines: number,
   db: Database.Database,
-  condenserHandle: string,
-): Promise<CompressionReport> {
+  sprintName: string,
+): Promise<CompressionReport | null> {
   const { getSpawn } = await import("./spawner.js");
 
-  const stats = parseNumstat(projectDir, stagingBranch);
-  const afterLines = stats ? stats.additions - stats.deletions : beforeLines;
+  const compression = await syncSprintCompressionState(projectDir, db, sprintName);
+  if (!compression) return null;
 
-  const condenserSpawn = getSpawn(db, condenserHandle);
+  const condenserSpawn = compression.condenser_handle
+    ? getSpawn(db, compression.condenser_handle)
+    : null;
   const condenserRuntime = condenserSpawn?.started_at
     ? formatDuration(condenserSpawn.started_at, condenserSpawn.stopped_at)
     : null;
 
+  const beforeLines = Math.max(0, compression.before_additions - compression.before_deletions);
+  const afterAdditions = compression.after_additions ?? compression.before_additions;
+  const afterDeletions = compression.after_deletions ?? compression.before_deletions;
+  const afterFilesChanged = compression.after_files_changed ?? compression.before_files_changed;
+  const afterLines = Math.max(0, afterAdditions - afterDeletions);
   const ratio = beforeLines > 0
     ? Math.max(0, (beforeLines - afterLines) / beforeLines)
     : 0;
 
   return {
+    status: compression.status,
+    stagingBranch: compression.staging_branch,
+    stagingWorktreePath: compression.staging_worktree_path,
     beforeLines,
-    afterLines: Math.max(0, afterLines),
+    afterLines,
     ratio,
     condenserExitCode: condenserSpawn?.exit_code ?? null,
     condenserRuntime,
+    beforeAdditions: compression.before_additions,
+    beforeDeletions: compression.before_deletions,
+    beforeFilesChanged: compression.before_files_changed,
+    afterAdditions,
+    afterDeletions,
+    afterFilesChanged,
+    errorMessage: compression.error_message,
+    bypassReason: compression.bypass_reason,
   };
 }
 
@@ -748,6 +1171,7 @@ export function squashMergeToMain(
   stagingBranch: string,
   sprintName: string,
   goal: string,
+  stagingWorktreePath?: string | null,
 ): void {
   execSync(`git merge --squash ${stagingBranch}`, {
     cwd: projectDir,
@@ -759,7 +1183,15 @@ export function squashMergeToMain(
     stdio: "pipe",
   });
 
-  // Clean up staging branch
+  if (stagingWorktreePath && fs.existsSync(stagingWorktreePath)) {
+    try {
+      execSync(`git worktree remove "${stagingWorktreePath}" --force`, {
+        cwd: projectDir,
+        stdio: "pipe",
+      });
+    } catch { /* best effort */ }
+  }
+
   try {
     execSync(`git branch -D ${stagingBranch}`, { cwd: projectDir, stdio: "pipe" });
   } catch { /* best effort */ }

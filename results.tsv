@@ -10,3 +10,4 @@ ffc5768	8655	8653	keep	inlined SprintStatus type into Sprint interface
 ee8e3f7	8641	8608	keep	removed unused saveIdentity function from identities.ts
 b0d6186	8608	8504	keep	removed dead attachLogStreaming + WS types from server.ts
 f30c6e6	8504	8496	keep	removed dead invalidateNumstatCache from server.ts
+1a47d18	8496	8488	keep	removed unused listMembers from teams.ts

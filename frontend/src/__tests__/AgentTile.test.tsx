@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { AgentTile } from '../components/AgentTile';
 import { AgentTile as AgentTileType } from '../types';
 
@@ -7,6 +7,9 @@ const agent: AgentTileType = {
   handle: '@frontend',
   bucket: 'in_progress',
   mission: 'Build the React kanban command center frontend for AgentBoard with full component suite',
+  track: 'auth',
+  approachGroup: 'oauth-flow',
+  approachLabel: 'token-exchange',
   branch: 'agent/frontend',
   lastPost: 'Working on components',
   additions: 150,
@@ -30,6 +33,13 @@ describe('AgentTile', () => {
     expect(screen.getByText('8f')).toBeInTheDocument();
   });
 
+  it('shows idea-governance metadata', () => {
+    render(<AgentTile agent={agent} />);
+    expect(screen.getByText('auth')).toBeInTheDocument();
+    expect(screen.getByText('oauth-flow')).toBeInTheDocument();
+    expect(screen.getByText('token-exchange')).toBeInTheDocument();
+  });
+
   it('expands on click to show details', () => {
     render(<AgentTile agent={agent} />);
     expect(screen.queryByText(/Branch:/)).not.toBeInTheDocument();
@@ -37,6 +47,9 @@ describe('AgentTile', () => {
     fireEvent.click(screen.getByRole('button'));
 
     expect(screen.getByText('Branch: agent/frontend')).toBeInTheDocument();
+    expect(screen.getByText('Track: auth')).toBeInTheDocument();
+    expect(screen.getByText('Approach group: oauth-flow')).toBeInTheDocument();
+    expect(screen.getByText('Approach: token-exchange')).toBeInTheDocument();
     expect(screen.getByText('Working on components')).toBeInTheDocument();
   });
 
@@ -101,7 +114,9 @@ describe('AgentTile', () => {
     fireEvent.change(screen.getByPlaceholderText('Enter directive...'), {
       target: { value: 'Focus on tests' },
     });
-    fireEvent.submit(screen.getByText('Send').closest('form')!);
+    await act(async () => {
+      fireEvent.submit(screen.getByText('Send').closest('form')!);
+    });
     expect(fetchSpy).toHaveBeenCalledWith(
       '/data/sprint/test-sprint/steer/frontend',
       expect.objectContaining({

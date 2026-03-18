@@ -1,29 +1,52 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { LandingBrief } from '../components/LandingBrief';
-import { ToastProvider } from '../components/Toast';
 
 const briefData = {
+  sprint: {
+    name: 'Sprint Alpha',
+    goal: 'Explore auth approaches',
+    status: 'ready',
+  },
+  summary: {
+    passed: 1,
+    crashed: 1,
+    running: 0,
+    totalTests: 18,
+  },
+  conflicts: [],
+  compression: {
+    status: 'ready',
+    beforeLines: 120,
+    afterLines: 72,
+    ratio: 0.4,
+    errorMessage: null,
+    bypassReason: null,
+  },
   agents: [
     {
       handle: '@frontend',
       status: 'passed',
       branch: 'agent/frontend',
-      testsPassed: 10,
-      testsFailed: 0,
-      filesChanged: 5,
-      additions: 200,
-      deletions: 30,
+      mission: 'Try a token exchange flow',
+      track: 'auth',
+      approachGroup: 'oauth-flow',
+      approachLabel: 'token-exchange',
+      testCount: 10,
+      commitCount: 3,
+      lastDagPushMessage: 'refine callback flow',
     },
     {
       handle: '@backend',
-      status: 'failed',
+      status: 'crashed',
       branch: 'agent/backend',
-      testsPassed: 8,
-      testsFailed: 2,
-      filesChanged: 3,
-      additions: 100,
-      deletions: 10,
+      mission: 'Try middleware-first validation',
+      track: 'auth',
+      approachGroup: 'oauth-flow',
+      approachLabel: 'middleware-first',
+      testCount: 8,
+      commitCount: 2,
+      lastDagPushMessage: 'prototype middleware route',
     },
   ],
 };
@@ -34,11 +57,7 @@ function renderBrief(props = {}) {
     onClose: vi.fn(),
     ...props,
   };
-  return render(
-    <ToastProvider>
-      <LandingBrief {...defaultProps} />
-    </ToastProvider>
-  );
+  return render(<LandingBrief {...defaultProps} />);
 }
 
 beforeEach(() => {
@@ -47,53 +66,43 @@ beforeEach(() => {
 
 describe('LandingBrief', () => {
   it('shows loading state', () => {
-    vi.spyOn(global, 'fetch').mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     renderBrief();
     expect(screen.getByText('Loading brief...')).toBeInTheDocument();
   });
 
-  it('renders agent data after fetch', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+  it('renders grouped sprint data after fetch', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: true,
       json: async () => briefData,
     } as Response);
 
     renderBrief();
     await waitFor(() => {
-      expect(screen.getByText('@frontend')).toBeInTheDocument();
+      expect(screen.getByText('Landing Brief: Sprint Alpha')).toBeInTheDocument();
     });
+
+    expect(screen.getByText('auth: oauth-flow')).toBeInTheDocument();
+    expect(screen.getByText('@frontend')).toBeInTheDocument();
     expect(screen.getByText('@backend')).toBeInTheDocument();
-    expect(screen.getByText('10 passed')).toBeInTheDocument();
-    expect(screen.getByText('2 failed')).toBeInTheDocument();
+    expect(screen.getByText('token-exchange')).toBeInTheDocument();
+    expect(screen.getByText('middleware-first')).toBeInTheDocument();
+    expect(screen.getByText(/Synthesis: ready \(40% reduction\)/)).toBeInTheDocument();
   });
 
-  it('shows merge all passing button', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
-      ok: true,
-      json: async () => briefData,
+  it('shows a fallback when the brief cannot be loaded', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: false,
     } as Response);
 
     renderBrief();
     await waitFor(() => {
-      expect(screen.getByText('Merge All Passing')).toBeInTheDocument();
-    });
-  });
-
-  it('shows per-agent merge buttons', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
-      ok: true,
-      json: async () => briefData,
-    } as Response);
-
-    renderBrief();
-    await waitFor(() => {
-      const mergeButtons = screen.getAllByText('Merge');
-      expect(mergeButtons).toHaveLength(2);
+      expect(screen.getByText('Unable to load brief.')).toBeInTheDocument();
     });
   });
 
   it('calls onClose when close is clicked', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: true,
       json: async () => briefData,
     } as Response);

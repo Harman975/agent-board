@@ -156,6 +156,9 @@ export interface SprintAgent {
   agent_handle: string;
   identity_name: string | null;
   mission: string | null;
+  track: string | null;
+  approach_group: string | null;
+  approach_label: string | null;
 }
 
 export interface SprintReport {
@@ -165,6 +168,7 @@ export interface SprintReport {
   conflicts: string[];
   escalations: number;
   mergeOrder: string[];
+  compression?: CompressionReport;
 }
 
 export interface SprintAgentReport {
@@ -179,10 +183,20 @@ export interface SprintAgentReport {
   mission: string | null;
   lastPost: string | null;
   report: ParsedAgentReport | null;
+  track: string | null;
+  approachGroup: string | null;
+  approachLabel: string | null;
+  commitCount: number;
+  lastDagPushMessage: string | null;
 }
 
 export interface ParsedAgentReport {
   summary: string;
+  hypothesis: string | null;
+  reused: string | null;
+  whyNotExistingCode: string | null;
+  whySurvives: string | null;
+  newFiles: string | null;
   architecture: string | null;
   dataFlow: string | null;
   edgeCases: string | null;
@@ -208,14 +222,30 @@ export interface AgentBrief {
   branch: string | null;
   testCount: number | null;
   mission: string | null;
+  track: string | null;
+  approachGroup: string | null;
+  approachLabel: string | null;
+  commitCount: number;
+  lastDagPushMessage: string | null;
 }
 
 export interface CompressionReport {
+  status: "pending" | "running" | "ready" | "failed" | "bypassed";
+  stagingBranch: string | null;
+  stagingWorktreePath: string | null;
   beforeLines: number;
   afterLines: number;
   ratio: number; // 0-1, e.g. 0.4 = 40% compressed
   condenserExitCode: number | null;
   condenserRuntime: string | null;
+  beforeAdditions: number;
+  beforeDeletions: number;
+  beforeFilesChanged: number;
+  afterAdditions: number | null;
+  afterDeletions: number | null;
+  afterFilesChanged: number | null;
+  errorMessage: string | null;
+  bypassReason: string | null;
 }
 
 export interface LandingBrief {
@@ -225,6 +255,24 @@ export interface LandingBrief {
   conflicts: string[];
   testsPassOnMain: boolean;
   compression?: CompressionReport;
+}
+
+export interface SprintCompression {
+  sprint_name: string;
+  status: "pending" | "running" | "ready" | "failed" | "bypassed";
+  staging_branch: string | null;
+  staging_worktree_path: string | null;
+  condenser_handle: string | null;
+  before_additions: number;
+  before_deletions: number;
+  before_files_changed: number;
+  after_additions: number | null;
+  after_deletions: number | null;
+  after_files_changed: number | null;
+  error_message: string | null;
+  bypass_reason: string | null;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
 // === DAG types ===

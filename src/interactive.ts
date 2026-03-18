@@ -19,15 +19,12 @@ import type Database from "better-sqlite3";
 import {
   buildLandingBrief,
   buildSprintReport,
-  mergeWithTestGates,
   startSprint,
   uniqueSprintName,
-  createStagingBranch,
-  mergeAgentsToStaging,
-  spawnCondenser,
-  buildCompressionReport,
+  startSprintCompression,
+  syncSprintCompressionState,
+  bypassSprintCompression,
   squashMergeToMain,
-  parseNumstat,
   type AgentSpec,
 } from "./sprint-orchestrator.js";
 
@@ -89,8 +86,6 @@ interface PollerState {
   knownAlive: Set<string>;
   // Track sprints where compression has been triggered to avoid re-triggering
   compressionTriggered: Set<string>;
-  // Track condenser handle per sprint for monitoring
-  condenserHandles: Map<string, string>;
 }
 
 function startPoller(
@@ -101,7 +96,6 @@ function startPoller(
   const state: PollerState = {
     knownAlive: new Set(),
     compressionTriggered: new Set(),
-    condenserHandles: new Map(),
   };
 
   const poll = async () => {
@@ -114,19 +108,15 @@ function startPoller(
 
       for (const sprint of running) {
         const agents = db.prepare(
-          "SELECT * FROM sprint_agents WHERE sprint_name = ?"
+          "SELECT * FROM sprint_agents WHERE sprint_name = ? AND (identity_name IS NULL OR identity_name != 'condenser')"
         ).all(sprint.name) as SprintAgent[];
 
         const spawns = listSpawns(db);
-        const condenserHandle = state.condenserHandles.get(sprint.name);
-
-        // Separate condenser from regular agents
-        const regularAgents = agents.filter((sa) => sa.agent_handle !== condenserHandle);
 
         let allRegularDone = true;
         let anyNewlyDone = false;
 
-        for (const sa of regularAgents) {
+        for (const sa of agents) {
           const spawn = spawns.find((s) => s.agent_handle === sa.agent_handle);
           if (!spawn) continue;
 
@@ -145,14 +135,12 @@ function startPoller(
         }
 
         // Check if compression is in progress
-        if (sprint.status === "compressing" && condenserHandle) {
-          const condenserSpawn = spawns.find((s) => s.agent_handle === condenserHandle);
-          const condenserAlive = condenserSpawn && !condenserSpawn.stopped_at && isProcessAlive(condenserSpawn.pid);
-
-          if (!condenserAlive) {
-            // Condenser finished — transition to ready
-            db.prepare("UPDATE sprints SET status = 'ready' WHERE name = ?").run(sprint.name);
-            notify(rl, `${c.green}Sprint "${sprint.name}" COMPRESSED — type: land${c.reset}`);
+        if (sprint.status === "compressing") {
+          const compression = await syncSprintCompressionState(process.cwd(), db, sprint.name);
+          if (compression?.status === "ready") {
+            notify(rl, `${c.green}Sprint "${sprint.name}" SYNTHESIZED — type: land${c.reset}`);
+          } else if (compression?.status === "failed") {
+            notify(rl, `${c.yellow}Sprint "${sprint.name}" synthesis failed — type: land to inspect/bypass${c.reset}`);
           }
           continue;
         }
@@ -165,14 +153,12 @@ function startPoller(
             notify(rl, `${c.green}Sprint "${sprint.name}" READY TO LAND${c.reset} — type: land`);
           } else {
             state.compressionTriggered.add(sprint.name);
-            notify(rl, `All agents done. Starting compression for "${sprint.name}"...`);
+            notify(rl, `All agents done. Starting synthesis for "${sprint.name}"...`);
 
             // Trigger compression in background
-            triggerCompression(sprint.name, sprint.goal, regularAgents.map((a) => a.agent_handle), db, rl, state)
+            triggerCompression(sprint.name, db, rl)
               .catch((err) => {
-                notify(rl, `${c.red}Compression failed: ${err.message}${c.reset}`);
-                // Fall back to ready-to-land without compression
-                notify(rl, `${c.green}Sprint "${sprint.name}" READY TO LAND${c.reset} (uncompressed) — type: land`);
+                notify(rl, `${c.red}Synthesis failed: ${err.message}${c.reset}`);
               });
           }
         }
@@ -193,43 +179,22 @@ function startPoller(
 
 async function triggerCompression(
   sprintName: string,
-  goal: string,
-  agentHandles: string[],
   db: Database.Database,
   rl: readline.Interface,
-  state: PollerState,
 ): Promise<void> {
   const projectDir = process.cwd();
   const rc = readBoardRC();
   if (!rc) throw new Error("No .boardrc found");
 
-  // 1. Create staging branch
-  const stagingBranch = createStagingBranch(projectDir, sprintName);
-  notify(rl, `Created ${stagingBranch}`);
-
-  // 2. Merge agents to staging
-  const { merged, conflicted } = await mergeAgentsToStaging(projectDir, stagingBranch, agentHandles, db);
-  notify(rl, `Merged ${merged.length} agents to staging${conflicted.length > 0 ? ` (${conflicted.length} with conflicts)` : ""}`);
-
-  // 3. Measure baseline LOC
-  const baseline = parseNumstat(projectDir, stagingBranch);
-  const beforeLines = baseline ? baseline.additions - baseline.deletions : 0;
-
-  // 4. Update sprint status
-  db.prepare("UPDATE sprints SET status = 'compressing' WHERE name = ?").run(sprintName);
-
-  // 5. Spawn condenser
-  const condenser = await spawnCondenser({
+  const result = await startSprintCompression({
     sprintName,
-    stagingBranch,
     projectDir,
     serverUrl: rc.url,
     db,
-    beforeLines: Math.max(0, beforeLines),
   });
-
-  state.condenserHandles.set(sprintName, condenser.handle);
-  notify(rl, `Condenser spawned (PID ${condenser.pid}) — compressing...`);
+  if (result.launched) {
+    notify(rl, `Synthesis launched for "${sprintName}"${result.conflicted.length > 0 ? ` (${result.conflicted.length} conflicted merges)` : ""}`);
+  }
 }
 
 // === Actions ===
@@ -330,6 +295,17 @@ async function actionLand(
   // Check sprint status
   const sprintRow = db.prepare("SELECT * FROM sprints WHERE name = ?").get(sprintName) as { name: string; goal: string; status: string } | undefined;
 
+  if (sprintRow?.status === "running") {
+    const pending = await buildLandingBrief(sprintName, projectDir);
+    if (pending.summary.running > 0) {
+      console.log(`\n` + renderLandingBrief(pending) + `\n`);
+      console.log(`  ${c.yellow}Sprint "${sprintName}" still has running agents.${c.reset}\n`);
+      return;
+    }
+    await triggerCompression(sprintName, db, rl);
+    return;
+  }
+
   if (sprintRow?.status === "compressing") {
     console.log(`\n  ${c.yellow}Sprint "${sprintName}" is still compressing.${c.reset}`);
     console.log(`  ${c.dim}The condenser agent is working. Check back soon or type "status".${c.reset}\n`);
@@ -338,7 +314,6 @@ async function actionLand(
 
   // If sprint is "ready" (compressed), show compressed landing brief
   if (sprintRow?.status === "ready") {
-    const stagingBranch = `staging/${sprintName}`;
     console.log(`\n  ${c.dim}Building compressed landing brief...${c.reset}\n`);
 
     let brief;
@@ -349,32 +324,30 @@ async function actionLand(
       return;
     }
 
-    // Attach compression report
-    const condenserAgents = db.prepare(
-      "SELECT agent_handle FROM sprint_agents WHERE sprint_name = ? AND identity_name = 'condenser'"
-    ).all(sprintName) as { agent_handle: string }[];
-    const condenserHandle = condenserAgents[0]?.agent_handle;
-
-    if (condenserHandle) {
-      const baseline = parseNumstat(projectDir, stagingBranch);
-      const beforeLines = baseline ? baseline.additions - baseline.deletions : 0;
-      const compression = await buildCompressionReport(projectDir, stagingBranch, Math.max(0, beforeLines), db, condenserHandle);
-      brief.compression = compression;
-    }
-
     console.log(renderLandingBrief(brief));
 
     console.log("");
-    console.log(`  ${c.bold}[enter]${c.reset} squash-merge to main  ${c.bold}[d]${c.reset} show diff  ${c.bold}[q]${c.reset} back`);
+    let prompt = `  ${c.bold}[enter]${c.reset} squash-merge to main  ${c.bold}[d]${c.reset} show diff`;
+    if (brief.compression?.status === "failed") prompt += `  ${c.bold}[b]${c.reset} bypass`;
+    prompt += `  ${c.bold}[q]${c.reset} back`;
+    console.log(prompt);
 
     const choice = await ask(rl, `  > `);
 
     if (choice === "q") return;
 
+    if (choice === "b" && brief.compression?.status === "failed") {
+      const reason = await ask(rl, `  bypass reason: `);
+      bypassSprintCompression(db, sprintName, reason);
+      console.log(`  ${c.yellow}Bypass recorded.${c.reset}\n`);
+      await actionLand(sprintName, rc, rl, db);
+      return;
+    }
+
     if (choice === "d") {
       try {
         const { execSync } = await import("child_process");
-        const diff = execSync(`git diff main..${stagingBranch}`, { cwd: projectDir, encoding: "utf-8", stdio: "pipe" });
+        const diff = execSync(`git diff main..${brief.compression?.stagingBranch ?? `staging/${sprintName}`}`, { cwd: projectDir, encoding: "utf-8", stdio: "pipe" });
         console.log(diff);
       } catch (err: any) {
         console.log(`  ${c.red}Could not show diff: ${err.message}${c.reset}`);
@@ -386,7 +359,17 @@ async function actionLand(
 
     if (choice === "") {
       try {
-        squashMergeToMain(projectDir, stagingBranch, sprintName, sprintRow.goal);
+        if (brief.compression?.status === "failed") {
+          console.log(`  ${c.red}Synthesis failed — bypass first with [b].${c.reset}\n`);
+          return;
+        }
+        squashMergeToMain(
+          projectDir,
+          brief.compression?.stagingBranch ?? `staging/${sprintName}`,
+          sprintName,
+          sprintRow.goal,
+          brief.compression?.stagingWorktreePath,
+        );
         db.prepare(
           "UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?"
         ).run(sprintName);
@@ -410,99 +393,7 @@ async function actionLand(
 
   console.log(renderLandingBrief(brief));
 
-  // Interactive landing loop
-  const passing = brief.agents.filter((a) => a.status === "passed");
-
-  const landLoop = async (): Promise<void> => {
-    console.log("");
-    let prompt = `  ${c.bold}[enter]${c.reset} land ${passing.length} passing`;
-    if (brief.summary.running > 0) prompt += `  ${c.bold}[w]${c.reset} wait`;
-    for (let i = 0; i < brief.agents.length; i++) {
-      prompt += `  ${c.bold}[${i + 1}]${c.reset} ${brief.agents[i].handle}`;
-    }
-    prompt += `  ${c.bold}[q]${c.reset} back`;
-    console.log(prompt);
-
-    const choice = await ask(rl, `  > `);
-
-    if (choice === "q") return;
-
-    if (choice === "w" && brief.summary.running > 0) {
-      console.log(`  ${c.dim}Waiting 10 seconds...${c.reset}`);
-      await new Promise((r) => setTimeout(r, 10_000));
-      // Re-run land with fresh data
-      await actionLand(sprintName, rc, rl, db);
-      return;
-    }
-
-    const num = parseInt(choice, 10);
-    if (!isNaN(num) && num >= 1 && num <= brief.agents.length) {
-      const agent = brief.agents[num - 1];
-      console.log("\n" + renderAgentInspect(agent));
-      const inspectChoice = await ask(rl, `  > `);
-      if (inspectChoice === "m" && agent.status === "passed") {
-        await doMerge([agent.handle], sprintName, rc, db, projectDir);
-        return;
-      }
-      if (inspectChoice === "d" && agent.branch) {
-        try {
-          const { execSync } = await import("child_process");
-          const diff = execSync(`git diff main..${agent.branch}`, { cwd: projectDir, encoding: "utf-8", stdio: "pipe" });
-          console.log(diff);
-        } catch (err: any) {
-          console.log(`  ${c.red}Could not show diff: ${err.message}${c.reset}`);
-        }
-      }
-      await landLoop();
-      return;
-    }
-
-    if (choice === "") {
-      if (passing.length === 0) {
-        console.log(`  ${c.dim}No passing agents to merge.${c.reset}\n`);
-        return;
-      }
-      await doMerge(passing.map((a) => a.handle), sprintName, rc, db, projectDir);
-      return;
-    }
-
-    console.log(`  ${c.dim}Unknown option.${c.reset}`);
-    await landLoop();
-  };
-
-  await landLoop();
-}
-
-async function doMerge(
-  handles: string[],
-  sprintName: string,
-  rc: BoardRC,
-  db: Database.Database,
-  projectDir: string,
-): Promise<void> {
-  console.log(`\n  ${c.bold}Landing ${handles.length} agent${handles.length === 1 ? "" : "s"}...${c.reset}`);
-
-  try {
-    const result = await mergeWithTestGates(handles, projectDir, { db });
-
-    db.prepare(
-      "UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?"
-    ).run(sprintName);
-
-    console.log(`\n  ${c.green}Landed ${result.merged.length} agent${result.merged.length === 1 ? "" : "s"}.${c.reset}\n`);
-
-    try {
-      await api(rc, "POST", "/api/posts", {
-        content: `Sprint "${sprintName}" landed. Merged: ${result.merged.join(", ")}.`,
-        channel: "#status",
-      });
-    } catch { /* best effort */ }
-  } catch (err: any) {
-    console.error(`  ${c.red}Merge failed: ${err.message}${c.reset}\n`);
-    db.prepare(
-      "UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?"
-    ).run(sprintName);
-  }
+  console.log(`  ${c.dim}Sprint is still preparing synthesis. Re-run land shortly.${c.reset}\n`);
 }
 
 async function actionStatus(nameArg: string, db: Database.Database): Promise<void> {

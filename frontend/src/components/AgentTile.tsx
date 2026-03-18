@@ -20,6 +20,7 @@ export const AgentTile: React.FC<AgentTileProps> = ({ agent, sprintName }) => {
   const [expanded, setExpanded] = useState(false);
   const [steering, setSteering] = useState(false);
   const [directive, setDirective] = useState('');
+  const metadata = [agent.track, agent.approachGroup, agent.approachLabel].filter(Boolean) as string[];
 
   const statusClass = agent.alive ? 'alive' : 'dead';
 
@@ -73,6 +74,14 @@ export const AgentTile: React.FC<AgentTileProps> = ({ agent, sprintName }) => {
         {expanded ? agent.mission : agent.mission.slice(0, 80) + (agent.mission.length > 80 ? '\u2026' : '')}
       </p>
 
+      {metadata.length > 0 && (
+        <div className="tile-tags">
+          {metadata.map((value) => (
+            <span key={value} className="tile-tag">{value}</span>
+          ))}
+        </div>
+      )}
+
       <div className="tile-meta">
         <span className="tile-diff" aria-label="diff stats">
           <span className="additions">+{agent.additions}</span>
@@ -85,6 +94,15 @@ export const AgentTile: React.FC<AgentTileProps> = ({ agent, sprintName }) => {
         <div className="tile-details">
           {agent.branch && (
             <p className="tile-branch">Branch: {agent.branch}</p>
+          )}
+          {agent.track && (
+            <p className="tile-context">Track: {agent.track}</p>
+          )}
+          {agent.approachGroup && (
+            <p className="tile-context">Approach group: {agent.approachGroup}</p>
+          )}
+          {agent.approachLabel && (
+            <p className="tile-context">Approach: {agent.approachLabel}</p>
           )}
           {agent.lastPost && (
             <p className="tile-last-post">{agent.lastPost}</p>

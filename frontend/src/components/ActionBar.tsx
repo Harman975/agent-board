@@ -44,26 +44,13 @@ export const ActionBar: React.FC<ActionBarProps> = ({ sprint, connected, onToggl
 
   const counts = countByBucket(sprint.agents);
 
-  const handleMerge = async () => {
-    try {
-      const res = await fetch(`/data/sprint/${sprint.name}/merge`, { method: 'POST' });
-      if (res.ok) {
-        const result = await res.json();
-        if (result.allDone) {
-          alert(`Sprint complete! ${result.results.length} branches merged.`);
-        }
-      }
-    } catch {
-      // merge failed
-    }
-  };
-
   return (
     <header className="action-bar">
       <div className="action-bar-left">
         <span className="sprint-name">{sprint.name}</span>
         <span className="sprint-goal">{sprint.goal}</span>
         <span className="sprint-elapsed">{elapsed(sprint.createdAt)}</span>
+        {sprint.status && <span className="sprint-status">{sprint.status}</span>}
       </div>
       <div className="action-bar-center">
         <span className="bucket-count planning">{counts.planning} planning</span>
@@ -76,9 +63,6 @@ export const ActionBar: React.FC<ActionBarProps> = ({ sprint, connected, onToggl
         <span className={`connection-status ${connected ? 'connected' : 'disconnected'}`}>
           {connected ? 'Live' : 'Polling'}
         </span>
-        <button className="merge-button" onClick={handleMerge}>
-          Merge Sprint
-        </button>
         <button
           className={`chat-toggle-btn ${chatOpen ? 'active' : ''}`}
           onClick={onToggleChat}

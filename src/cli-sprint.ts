@@ -25,8 +25,10 @@ import {
   runPreFlight,
   buildSprintReport,
   buildLandingBrief,
-  mergeWithTestGates,
   startSprint,
+  startSprintCompression,
+  bypassSprintCompression,
+  squashMergeToMain,
   type AgentSpec,
 } from "./sprint-orchestrator.js";
 
@@ -244,11 +246,30 @@ export function registerSprintCommands(program: Command): void {
       if (opts.plan) {
         const planPath = path.resolve(opts.plan);
         if (!fs.existsSync(planPath)) { db.close(); die(`Plan file not found: ${planPath}`); }
-        let plan: { goal: string; tasks: { agent: string; handle: string; mission: string; scope: string[] }[] };
+        let plan: {
+          goal: string;
+          tasks: {
+            agent: string;
+            handle: string;
+            mission: string;
+            scope: string[];
+            track?: string;
+            approachGroup?: string;
+            approachLabel?: string;
+          }[];
+        };
         try { plan = JSON.parse(fs.readFileSync(planPath, "utf-8")); }
         catch (err: any) { db.close(); die(`Invalid JSON in plan file: ${err.message}`); }
         if (!plan.tasks || !Array.isArray(plan.tasks)) { db.close(); die("Plan must contain a 'tasks' array."); }
-        agentSpecs = plan.tasks.map((t) => ({ handle: t.handle, identity: t.agent, mission: t.mission, scope: t.scope }));
+        agentSpecs = plan.tasks.map((t) => ({
+          handle: t.handle,
+          identity: t.agent,
+          mission: t.mission,
+          scope: t.scope,
+          track: t.track,
+          approachGroup: t.approachGroup,
+          approachLabel: t.approachLabel,
+        }));
       } else if (opts.yaml) {
         const content = fs.readFileSync(opts.yaml, "utf-8");
         try {
@@ -319,42 +340,124 @@ export function registerSprintCommands(program: Command): void {
     });
 
   sprint
+    .command("compress <name>")
+    .description("Start or resume sprint synthesis/compression")
+    .action(async (name: string) => {
+      const rc = requireRC();
+      const { getDb } = await import("./db.js");
+      const db = getDb();
+
+      try {
+        const result = await startSprintCompression({
+          sprintName: name,
+          projectDir: process.cwd(),
+          serverUrl: rc.url,
+          db,
+        });
+
+        if (result.launched) {
+          console.log(`Started synthesis for "${name}".`);
+          if (result.merged.length > 0 || result.conflicted.length > 0) {
+            console.log(`  merged: ${result.merged.length}, conflicted: ${result.conflicted.length}`);
+          }
+        } else {
+          console.log(`Synthesis already in progress or ready for "${name}".`);
+        }
+      } catch (err: any) {
+        die(err.message);
+      } finally {
+        db.close();
+      }
+    });
+
+  sprint
     .command("land <name>")
-    .description("CEO landing experience — review agent work in English, inspect, merge passing")
-    .option("--yes", "Skip interactive prompts, merge all passing agents")
-    .action(async (name: string, opts: { yes?: boolean }) => {
+    .description("CEO landing experience — review agent work in English, synthesize, and squash-merge")
+    .option("--yes", "Skip interactive prompts and land the synthesized sprint once ready")
+    .option("--wait", "Wait for workers/synthesis instead of returning immediately")
+    .option("--bypass-compression <reason>", "Land even if synthesis failed, recording the reason")
+    .action(async (name: string, opts: { yes?: boolean; wait?: boolean; bypassCompression?: string }) => {
       const projectDir = process.cwd();
       const readline = await import("readline");
+      const { getDb } = await import("./db.js");
+      const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
       async function runLanding(): Promise<void> {
-        console.log(`\n${c.dim}Building landing brief...${c.reset}\n`);
-
-        let brief;
+        const db = getDb();
         try {
-          brief = await buildLandingBrief(name, projectDir);
-        } catch (err: any) {
-          die(err.message);
-        }
+          while (true) {
+            console.log(`\n${c.dim}Building landing brief...${c.reset}\n`);
 
-        console.log(renderLandingBrief(brief));
+            const sprintRow = db.prepare(
+              "SELECT * FROM sprints WHERE name = ?"
+            ).get(name) as Sprint | undefined;
+            if (!sprintRow) die(`Sprint not found: ${name}`);
 
-        if (opts.yes) {
-          const passing = brief.agents.filter((a) => a.status === "passed");
-          if (passing.length === 0) {
-            console.log(`\n  No passing agents to merge.`);
+            if (sprintRow.status === "running") {
+              const pendingBrief = await buildLandingBrief(name, projectDir);
+              console.log(renderLandingBrief(pendingBrief));
+
+              if (pendingBrief.summary.running > 0) {
+                if (!opts.wait) {
+                  console.log(`\n  ${c.yellow}Agents are still running. Wait for them to finish before landing, or re-run with --wait.${c.reset}`);
+                  return;
+                }
+                console.log(`\n  ${c.dim}Waiting for workers to finish...${c.reset}`);
+                await sleep(2000);
+                continue;
+              }
+
+              const rc = requireRC();
+              const started = await startSprintCompression({
+                sprintName: name,
+                projectDir,
+                serverUrl: rc.url,
+                db,
+              });
+              console.log(`Started synthesis for "${name}".`);
+              if (started.conflicted.length > 0) {
+                console.log(`  ${started.conflicted.length} merge conflict bundle(s) handed to the condenser.`);
+              }
+              if (!opts.wait) {
+                return;
+              }
+              console.log(`  ${c.dim}Waiting for synthesis to finish...${c.reset}`);
+              await sleep(2000);
+              continue;
+            }
+
+            const brief = await buildLandingBrief(name, projectDir);
+            console.log(renderLandingBrief(brief));
+
+            if (brief.sprint.status === "compressing" || brief.compression?.status === "running") {
+              if (!opts.wait) {
+                console.log(`\n  ${c.yellow}Synthesis is still running. Re-run land in a moment, or use board sprint land ${name} --wait.${c.reset}`);
+                return;
+              }
+              console.log(`\n  ${c.dim}Waiting for synthesis to finish...${c.reset}`);
+              await sleep(2000);
+              continue;
+            }
+
+            if (opts.yes) {
+              await doLand(brief, db, opts.bypassCompression);
+              return;
+            }
+
+            const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+            const ask = (q: string): Promise<string> => new Promise((resolve) => rl.question(q, (a) => resolve(a.trim())));
+
+            try {
+              await interactiveLoop(brief, rl, ask, db);
+            } finally {
+              rl.close();
+            }
             return;
           }
-          await doMerge(passing.map((a) => a.handle), name, projectDir);
-          return;
-        }
-
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const ask = (q: string): Promise<string> => new Promise((resolve) => rl.question(q, (a) => resolve(a.trim())));
-
-        try {
-          await interactiveLoop(brief, rl, ask, name, projectDir);
+        } catch (err: any) {
+          die(err.message);
         } finally {
-          rl.close();
+          db.close();
         }
       }
 
@@ -362,15 +465,14 @@ export function registerSprintCommands(program: Command): void {
         brief: Awaited<ReturnType<typeof buildLandingBrief>>,
         rl: import("readline").Interface,
         ask: (q: string) => Promise<string>,
-        sprintName: string,
-        dir: string,
+        db: import("better-sqlite3").Database,
       ): Promise<void> {
-        const passing = brief.agents.filter((a) => a.status === "passed");
-        const hasRunning = brief.summary.running > 0;
+        const synthesisFailed = brief.compression?.status === "failed";
+        const needsBypass = synthesisFailed && !opts.bypassCompression;
 
         console.log("");
-        let prompt = `  ${c.bold}[enter]${c.reset} land ${passing.length} passing`;
-        if (hasRunning) prompt += `  ${c.bold}[w]${c.reset} wait`;
+        let prompt = `  ${c.bold}[enter]${c.reset} ${needsBypass ? "land (requires bypass)" : "land synthesized result"}`;
+        if (brief.compression?.status === "failed") prompt += `  ${c.bold}[b]${c.reset} bypass`;
         for (let i = 0; i < brief.agents.length; i++) {
           prompt += `  ${c.bold}[${i + 1}]${c.reset} ${brief.agents[i].handle}`;
         }
@@ -381,11 +483,9 @@ export function registerSprintCommands(program: Command): void {
 
         if (choice === "q") return;
 
-        if (choice === "w" && hasRunning) {
-          console.log(`  ${c.dim}Waiting 10 seconds...${c.reset}`);
-          await new Promise((resolve) => setTimeout(resolve, 10000));
-          rl.close();
-          await runLanding();
+        if (choice === "b" && brief.compression?.status === "failed") {
+          const reason = await ask("  bypass reason: ");
+          await doLand(brief, db, reason);
           return;
         }
 
@@ -397,15 +497,10 @@ export function registerSprintCommands(program: Command): void {
 
           const inspectChoice = await ask("  > ");
 
-          if (inspectChoice === "m" && agent.status === "passed") {
-            await doMerge([agent.handle], sprintName, dir);
-            return;
-          }
-
           if (inspectChoice === "d" && agent.branch) {
             try {
               const diff = execSync(`git diff main..${agent.branch}`, {
-                cwd: dir, encoding: "utf-8", stdio: "pipe",
+                cwd: projectDir, encoding: "utf-8", stdio: "pipe",
               });
               console.log(diff);
             } catch (err: any) {
@@ -413,41 +508,57 @@ export function registerSprintCommands(program: Command): void {
             }
           }
 
-          await interactiveLoop(brief, rl, ask, sprintName, dir);
+          await interactiveLoop(brief, rl, ask, db);
           return;
         }
 
         if (choice === "") {
-          if (passing.length === 0) {
-            console.log(`\n  No passing agents to merge.`);
-            return;
-          }
-          await doMerge(passing.map((a) => a.handle), sprintName, dir);
+          await doLand(brief, db, opts.bypassCompression);
           return;
         }
 
         console.log(`  ${c.dim}Unknown option.${c.reset}`);
-        await interactiveLoop(brief, rl, ask, sprintName, dir);
+        await interactiveLoop(brief, rl, ask, db);
       }
 
-      async function doMerge(handles: string[], sprintName: string, dir: string): Promise<void> {
-        console.log(`\n  ${c.bold}Landing ${handles.length} agent${handles.length === 1 ? "" : "s"}...${c.reset}`);
+      async function doLand(
+        brief: Awaited<ReturnType<typeof buildLandingBrief>>,
+        db: import("better-sqlite3").Database,
+        bypassReason?: string,
+      ): Promise<void> {
+        console.log(`\n  ${c.bold}Landing synthesized sprint...${c.reset}`);
 
-        const { getDb } = await import("./db.js");
-        const db = getDb();
+        if (!brief.compression?.stagingBranch) {
+          throw new CliError(`Sprint "${name}" is not ready to land — no staging branch recorded.`);
+        }
+
+        if (brief.compression.status === "failed" && !bypassReason?.trim()) {
+          throw new CliError("Synthesis failed. Use --bypass-compression <reason> or choose [b] interactively.");
+        }
+
         try {
-          const result = await mergeWithTestGates(handles, dir, { db });
+          if (brief.compression.status === "failed" && bypassReason?.trim()) {
+            bypassSprintCompression(db, name, bypassReason);
+          }
+
+          squashMergeToMain(
+            projectDir,
+            brief.compression.stagingBranch,
+            name,
+            brief.sprint.goal,
+            brief.compression.stagingWorktreePath,
+          );
 
           db.prepare(
             "UPDATE sprints SET status = 'finished', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?"
-          ).run(sprintName);
+          ).run(name);
 
-          console.log(`\n  ${c.green}Landed ${result.merged.length} agent${result.merged.length === 1 ? "" : "s"}.${c.reset}`);
+          console.log(`\n  ${c.green}Landed synthesized sprint "${name}".${c.reset}`);
 
           try {
             const rc = requireRC();
             await api(rc, "POST", "/api/posts", {
-              content: `Sprint "${sprintName}" landed. Merged: ${result.merged.join(", ")}.`,
+              content: `Sprint "${name}" landed as a synthesized squash commit.`,
               channel: "#status",
             });
             console.log(`  ${c.dim}Posted to #status${c.reset}`);
@@ -456,9 +567,7 @@ export function registerSprintCommands(program: Command): void {
           console.error(`  ${c.red}Merge failed: ${err.message}${c.reset}`);
           db.prepare(
             "UPDATE sprints SET status = 'failed', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE name = ?"
-          ).run(sprintName);
-        } finally {
-          db.close();
+          ).run(name);
         }
       }
 

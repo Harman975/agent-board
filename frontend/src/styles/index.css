@@ -261,6 +261,22 @@ body {
   line-height: 1.4;
 }
 
+.tile-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tile-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(46, 94, 170, 0.1);
+  color: var(--in-progress);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
 .tile-meta {
   display: flex;
   gap: 8px;
@@ -296,6 +312,12 @@ body {
   font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--in-progress);
+  margin-bottom: 6px;
+}
+
+.tile-context {
+  font-size: 0.78rem;
+  color: var(--text-muted);
   margin-bottom: 6px;
 }
 

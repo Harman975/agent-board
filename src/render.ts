@@ -430,6 +430,46 @@ export function formatDuration(startIso: string, endIso?: string | null): string
   return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
 }
 
+function sprintStatusColor(status: Sprint["status"]): string {
+  if (status === "running") return c.green;
+  if (status === "compressing") return c.yellow;
+  if (status === "ready") return c.cyan;
+  if (status === "failed") return c.red;
+  return c.dim;
+}
+
+function groupAgentsByApproach<T extends {
+  handle: string;
+  track: string | null;
+  approachGroup: string | null;
+  approachLabel: string | null;
+}>(agents: T[]): T[][] {
+  const groups = new Map<string, T[]>();
+  for (const agent of agents) {
+    const key = agent.approachGroup ?? `__solo__:${agent.handle}`;
+    const bucket = groups.get(key) ?? [];
+    bucket.push(agent);
+    groups.set(key, bucket);
+  }
+  return Array.from(groups.values());
+}
+
+function renderApproachHeader(group: {
+  track: string | null;
+  approachGroup: string | null;
+  approachLabel: string | null;
+}[]): string | null {
+  const first = group[0];
+  if (!first.approachGroup) return null;
+  const labels = group
+    .map((agent) => agent.approachLabel)
+    .filter((label): label is string => !!label);
+  const uniqueLabels = Array.from(new Set(labels));
+  const track = first.track ? `${c.dim}[track:${first.track}]${c.reset} ` : "";
+  const suffix = uniqueLabels.length > 0 ? ` ${c.dim}${uniqueLabels.join(" vs ")}${c.reset}` : "";
+  return `  ${track}${c.bold}Approach Group:${c.reset} ${first.approachGroup}${suffix}`;
+}
+
 function agentStatusLabel(agent: SprintAgentReport): string {
   if (agent.stopped && agent.exitCode === 0) return `${c.green}\u2713 completed${c.reset}`;
   if (agent.stopped && agent.exitCode !== null && agent.exitCode > 0) return `${c.red}crashed (${agent.exitCode})${c.reset}`;
@@ -442,11 +482,12 @@ function renderAgentTileCompact(agent: SprintAgentReport): string {
   const status = agentStatusLabel(agent);
   const stats = `+${agent.additions}/-${agent.deletions}`;
   const files = `${agent.filesChanged} file${agent.filesChanged === 1 ? "" : "s"}`;
-  const summary = agent.report?.summary || agent.lastPost || agent.mission || "";
+  const summary = agent.approachLabel || agent.report?.summary || agent.lastPost || agent.mission || "";
   const truncated = summary.length > 60 ? summary.slice(0, 57) + "..." : summary;
+  const suffix = agent.commitCount > 0 ? `  ${c.dim}${agent.commitCount} commits${c.reset}` : "";
 
   return [
-    `  \u250c\u2500 ${colorHandle(agent.handle)} \u2500\u2500 ${status} \u2500\u2500 ${stats} \u2500\u2500 ${files} \u2500\u2510`,
+    `  \u250c\u2500 ${colorHandle(agent.handle)} \u2500\u2500 ${status} \u2500\u2500 ${stats} \u2500\u2500 ${files}${suffix} \u2500\u2510`,
     `  \u2502  ${truncated}`,
     `  \u2514${"─".repeat(60)}\u2518`,
   ].join("\n");
@@ -464,10 +505,59 @@ function renderAgentTileDetailed(agent: SprintAgentReport): string {
   if (agent.mission) {
     lines.push(`  \u2502  ${c.dim}Mission:${c.reset} ${agent.mission}`);
   }
+  if (agent.track || agent.approachGroup || agent.approachLabel) {
+    const parts = [
+      agent.track ? `track:${agent.track}` : null,
+      agent.approachGroup ? `group:${agent.approachGroup}` : null,
+      agent.approachLabel ? `label:${agent.approachLabel}` : null,
+    ].filter(Boolean);
+    lines.push(`  \u2502  ${c.dim}${parts.join("  ")}${c.reset}`);
+  }
+  if (agent.commitCount > 0 || agent.lastDagPushMessage) {
+    lines.push(`  \u2502  ${c.dim}Branch:${c.reset} ${agent.commitCount} commit${agent.commitCount === 1 ? "" : "s"}`);
+    if (agent.lastDagPushMessage) {
+      lines.push(`  \u2502  ${c.dim}DAG:${c.reset} ${agent.lastDagPushMessage}`);
+    }
+  }
 
   const report = agent.report;
   if (report) {
     lines.push(`  \u2502  ${c.bold}${report.summary}${c.reset}`);
+    if (report.hypothesis) {
+      lines.push(`  \u2502`);
+      lines.push(`  \u2502  ${c.bold}HYPOTHESIS${c.reset}`);
+      for (const line of report.hypothesis.split("\n")) {
+        lines.push(`  \u2502    ${line}`);
+      }
+    }
+    if (report.reused) {
+      lines.push(`  \u2502`);
+      lines.push(`  \u2502  ${c.bold}REUSED${c.reset}`);
+      for (const line of report.reused.split("\n")) {
+        lines.push(`  \u2502    ${line}`);
+      }
+    }
+    if (report.whyNotExistingCode) {
+      lines.push(`  \u2502`);
+      lines.push(`  \u2502  ${c.bold}WHY NOT EXISTING CODE${c.reset}`);
+      for (const line of report.whyNotExistingCode.split("\n")) {
+        lines.push(`  \u2502    ${line}`);
+      }
+    }
+    if (report.whySurvives) {
+      lines.push(`  \u2502`);
+      lines.push(`  \u2502  ${c.bold}WHY SURVIVES${c.reset}`);
+      for (const line of report.whySurvives.split("\n")) {
+        lines.push(`  \u2502    ${line}`);
+      }
+    }
+    if (report.newFiles) {
+      lines.push(`  \u2502`);
+      lines.push(`  \u2502  ${c.bold}NEW FILES${c.reset}`);
+      for (const line of report.newFiles.split("\n")) {
+        lines.push(`  \u2502    ${line}`);
+      }
+    }
     if (report.architecture) {
       lines.push(`  \u2502`);
       lines.push(`  \u2502  ${c.bold}ARCHITECTURE${c.reset}`);
@@ -507,22 +597,31 @@ function renderAgentTileDetailed(agent: SprintAgentReport): string {
 export function renderSprintReport(report: SprintReport, detail = false): string {
   const lines: string[] = [];
   const duration = formatDuration(report.sprint.created_at, report.sprint.finished_at);
-  const statusColor = report.sprint.status === "running"
-    ? c.green : report.sprint.status === "failed" ? c.red : c.dim;
+  const statusColor = sprintStatusColor(report.sprint.status);
 
   lines.push(`${c.bold}SPRINT REPORT: ${report.sprint.name}${c.reset}`);
   lines.push(`Goal: ${report.sprint.goal}  |  Duration: ${duration}  |  Agents: ${report.agents.length}  |  [${statusColor}${report.sprint.status}${c.reset}]`);
   lines.push("");
 
   const renderTile = detail ? renderAgentTileDetailed : renderAgentTileCompact;
-  for (const agent of report.agents) {
-    lines.push(renderTile(agent));
+  for (const group of groupAgentsByApproach(report.agents)) {
+    const header = renderApproachHeader(group);
+    if (header) {
+      lines.push(header);
+    }
+    for (const agent of group) {
+      lines.push(renderTile(agent));
+    }
   }
 
   lines.push("");
   lines.push(`  Totals: +${report.totals.additions}/-${report.totals.deletions} across ${report.totals.filesChanged} files`);
   lines.push(`  Conflicts: ${report.conflicts.length === 0 ? "none" : report.conflicts.join(", ")}`);
   lines.push(`  Escalations: ${report.escalations}`);
+  if (report.compression) {
+    const pct = Math.round(report.compression.ratio * 100);
+    lines.push(`  Synthesis: [${report.compression.status}] +${report.compression.beforeLines} -> +${report.compression.afterLines} lines (${pct}% retained reduction)`);
+  }
 
   if (report.mergeOrder.length > 0) {
     lines.push(`  Merge order: ${report.mergeOrder.join(" \u2192 ")}`);
@@ -539,8 +638,7 @@ export function renderSprintList(sprints: Sprint[]): string {
   if (sprints.length === 0) return `  ${c.dim}No sprints.${c.reset}`;
   return sprints
     .map((s) => {
-      const statusColor = s.status === "running"
-        ? c.green : s.status === "failed" ? c.red : c.dim;
+      const statusColor = sprintStatusColor(s.status);
       const duration = formatDuration(s.created_at, s.finished_at);
       return `  ${c.bold}${s.name}${c.reset}  [${statusColor}${s.status}${c.reset}]  ${duration}  ${c.dim}${s.goal}${c.reset}`;
     })
@@ -555,8 +653,7 @@ export function renderPortfolio(sprints: { sprint: Sprint; agentCount: number; r
   lines.push("");
 
   for (const s of sprints) {
-    const statusColor = s.sprint.status === "running"
-      ? c.green : s.sprint.status === "failed" ? c.red : c.dim;
+    const statusColor = sprintStatusColor(s.sprint.status);
     const duration = formatDuration(s.sprint.created_at, s.sprint.finished_at);
     const agents = `${s.agentCount} agents (${c.green}${s.running} running${c.reset}, ${c.dim}${s.stopped} stopped${c.reset})`;
     lines.push(`  ${c.bold}${s.sprint.name}${c.reset}  [${statusColor}${s.sprint.status}${c.reset}]  ${duration}`);
@@ -588,14 +685,40 @@ export function renderAlerts(alerts: Alert[]): string {
 
 // === Report parsing — extracts structured sections from agent posts ===
 
-export function parseAgentReport(content: string): { summary: string; architecture: string | null; dataFlow: string | null; edgeCases: string | null; tests: string | null } | null {
+export function parseAgentReport(content: string): {
+  summary: string;
+  hypothesis: string | null;
+  reused: string | null;
+  whyNotExistingCode: string | null;
+  whySurvives: string | null;
+  newFiles: string | null;
+  architecture: string | null;
+  dataFlow: string | null;
+  edgeCases: string | null;
+  tests: string | null;
+} | null {
   const reportMatch = content.match(/REPORT:\s*(.+)/);
   if (!reportMatch) return null;
 
   const summary = reportMatch[1].trim();
+  const labels = [
+    "HYPOTHESIS",
+    "REUSED",
+    "WHY NOT EXISTING CODE",
+    "WHY SURVIVES",
+    "NEW FILES",
+    "ARCHITECTURE",
+    "DATA FLOW",
+    "EDGE CASES",
+    "TESTS",
+  ];
+  const labelPattern = labels
+    .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
 
   function extractSection(label: string): string | null {
-    const regex = new RegExp(`${label}:\\s*([\\s\\S]*?)(?=(?:ARCHITECTURE:|DATA FLOW:|EDGE CASES:|TESTS:|$))`, "i");
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`${escaped}:\\s*([\\s\\S]*?)(?=(?:${labelPattern}):|$)`, "i");
     const match = content.match(regex);
     if (!match || !match[1].trim()) return null;
     return match[1].trim();
@@ -603,6 +726,11 @@ export function parseAgentReport(content: string): { summary: string; architectu
 
   return {
     summary,
+    hypothesis: extractSection("HYPOTHESIS"),
+    reused: extractSection("REUSED"),
+    whyNotExistingCode: extractSection("WHY NOT EXISTING CODE"),
+    whySurvives: extractSection("WHY SURVIVES"),
+    newFiles: extractSection("NEW FILES"),
     architecture: extractSection("ARCHITECTURE"),
     dataFlow: extractSection("DATA FLOW"),
     edgeCases: extractSection("EDGE CASES"),
@@ -624,6 +752,9 @@ function truncate(str: string, len: number): string {
 }
 
 function landingStatusLabel(brief: LandingBrief): string {
+  if (brief.sprint.status === "compressing" || brief.compression?.status === "running") return `${c.yellow}COMPRESSING${c.reset}`;
+  if (brief.compression?.status === "failed") return `${c.red}SYNTHESIS FAILED${c.reset}`;
+  if (brief.compression?.status === "bypassed") return `${c.yellow}BYPASS REQUIRED${c.reset}`;
   if (brief.summary.running > 0) return `${c.yellow}IN PROGRESS${c.reset}`;
   if (brief.summary.crashed > 0 && brief.summary.passed === 0) return `${c.red}ALL CRASHED${c.reset}`;
   if (brief.summary.crashed > 0) return `${c.yellow}PARTIAL${c.reset}`;
@@ -650,26 +781,33 @@ export function renderLandingBrief(brief: LandingBrief): string {
   lines.push(`  Started ${startTime} · Done ${endTime} · ${duration}`);
   lines.push("");
 
-  for (const agent of brief.agents) {
-    const icon = agentStatusIcon(agent.status);
-    const handle = agent.handle.padEnd(10);
-
-    let summaryText = "";
-    if (agent.status === "crashed") {
-      const lastContent = agent.lastPosts[0]?.content ?? "Unknown error";
-      summaryText = `Crashed: ${truncate(lastContent, 40)}`;
-    } else if (agent.report) {
-      summaryText = truncate(agent.report.summary, 50);
-    } else if (agent.lastPosts.length > 0) {
-      summaryText = truncate(agent.lastPosts[0].content, 50);
-    } else if (agent.mission) {
-      summaryText = truncate(agent.mission, 50);
+  for (const group of groupAgentsByApproach(brief.agents)) {
+    const header = renderApproachHeader(group);
+    if (header) {
+      lines.push(header);
     }
+    for (const agent of group) {
+      const icon = agentStatusIcon(agent.status);
+      const handle = agent.handle.padEnd(10);
 
-    const testPart = agent.testCount !== null ? ` ${agent.testCount} tests.` : "";
-    const runtimePart = agent.runtime ? ` ${agent.runtime}` : "";
+      let summaryText = agent.approachLabel ? `${agent.approachLabel} — ` : "";
+      if (agent.status === "crashed") {
+        const lastContent = agent.lastPosts[0]?.content ?? "Unknown error";
+        summaryText += `Crashed: ${truncate(lastContent, 40)}`;
+      } else if (agent.report) {
+        summaryText += truncate(agent.report.summary, 50);
+      } else if (agent.lastPosts.length > 0) {
+        summaryText += truncate(agent.lastPosts[0].content, 50);
+      } else if (agent.mission) {
+        summaryText += truncate(agent.mission, 50);
+      }
 
-    lines.push(`  ${handle} ${icon}  ${summaryText}.${testPart}${runtimePart}`);
+      const testPart = agent.testCount !== null ? ` ${agent.testCount} tests.` : "";
+      const runtimePart = agent.runtime ? ` ${agent.runtime}` : "";
+      const branchPart = agent.commitCount > 0 ? ` ${c.dim}${agent.commitCount} commits${c.reset}` : "";
+
+      lines.push(`  ${handle} ${icon}  ${summaryText}.${testPart}${runtimePart}${branchPart}`);
+    }
   }
 
   lines.push("");
@@ -680,9 +818,15 @@ export function renderLandingBrief(brief: LandingBrief): string {
     const badge = pct > 0
       ? `${c.green}+${brief.compression.beforeLines} → +${brief.compression.afterLines} lines (${pct}% compressed)${c.reset}`
       : `+${brief.compression.afterLines} lines (no compression)`;
-    lines.push(`  Compression: ${badge}`);
+    lines.push(`  Synthesis: [${brief.compression.status}] ${badge}`);
     if (brief.compression.condenserRuntime) {
       lines.push(`  ${c.dim}Condenser ran for ${brief.compression.condenserRuntime}${c.reset}`);
+    }
+    if (brief.compression.errorMessage) {
+      lines.push(`  ${c.red}${brief.compression.errorMessage}${c.reset}`);
+    }
+    if (brief.compression.bypassReason) {
+      lines.push(`  ${c.yellow}Bypass:${c.reset} ${brief.compression.bypassReason}`);
     }
     lines.push("");
   }
@@ -826,9 +970,30 @@ export function renderAgentInspect(agent: AgentBrief): string {
     lines.push(`  Mission: ${agent.mission}`);
     lines.push("");
   }
+  if (agent.track || agent.approachGroup || agent.approachLabel) {
+    const parts = [
+      agent.track ? `track:${agent.track}` : null,
+      agent.approachGroup ? `group:${agent.approachGroup}` : null,
+      agent.approachLabel ? `label:${agent.approachLabel}` : null,
+    ].filter(Boolean);
+    lines.push(`  ${parts.join("  ")}`);
+    lines.push("");
+  }
+  if (agent.commitCount > 0 || agent.lastDagPushMessage) {
+    lines.push(`  Branch summary: ${agent.commitCount} commit${agent.commitCount === 1 ? "" : "s"}`);
+    if (agent.lastDagPushMessage) {
+      lines.push(`  Last DAG push: ${agent.lastDagPushMessage}`);
+    }
+    lines.push("");
+  }
 
   if (agent.report) {
     lines.push(`  ${c.bold}REPORT:${c.reset} ${agent.report.summary}`);
+    if (agent.report.hypothesis) lines.push(`  ${c.bold}HYPOTHESIS:${c.reset} ${agent.report.hypothesis}`);
+    if (agent.report.reused) lines.push(`  ${c.bold}REUSED:${c.reset} ${agent.report.reused}`);
+    if (agent.report.whyNotExistingCode) lines.push(`  ${c.bold}WHY NOT EXISTING CODE:${c.reset} ${agent.report.whyNotExistingCode}`);
+    if (agent.report.whySurvives) lines.push(`  ${c.bold}WHY SURVIVES:${c.reset} ${agent.report.whySurvives}`);
+    if (agent.report.newFiles) lines.push(`  ${c.bold}NEW FILES:${c.reset} ${agent.report.newFiles}`);
     if (agent.report.architecture) lines.push(`  ${c.bold}ARCHITECTURE:${c.reset} ${agent.report.architecture}`);
     if (agent.report.dataFlow) lines.push(`  ${c.bold}DATA FLOW:${c.reset} ${agent.report.dataFlow}`);
     if (agent.report.edgeCases) lines.push(`  ${c.bold}EDGE CASES:${c.reset} ${agent.report.edgeCases}`);

@@ -9,6 +9,9 @@ export interface AgentTile {
   handle: string;
   bucket: BucketState;
   mission: string;
+  track?: string | null;
+  approachGroup?: string | null;
+  approachLabel?: string | null;
   branch: string | null;
   lastPost: string | null;
   additions: number;
@@ -21,6 +24,7 @@ export interface AgentTile {
 export interface SprintState {
   name: string;
   goal: string;
+  status?: string;
   agents: AgentTile[];
   createdAt: string;
 }
@@ -53,17 +57,39 @@ export interface SprintStartResult {
 
 export interface LandingBriefAgent {
   handle: string;
-  status: 'passed' | 'failed' | 'running';
-  branch: string;
-  testsPassed: number;
-  testsFailed: number;
-  filesChanged: number;
-  additions: number;
-  deletions: number;
+  status: 'passed' | 'crashed' | 'running';
+  branch: string | null;
+  mission: string | null;
+  track: string | null;
+  approachGroup: string | null;
+  approachLabel: string | null;
+  testCount: number | null;
+  commitCount: number;
+  lastDagPushMessage: string | null;
 }
 
 export interface LandingBriefData {
+  sprint: {
+    name: string;
+    goal: string;
+    status: string;
+  };
   agents: LandingBriefAgent[];
+  summary: {
+    passed: number;
+    crashed: number;
+    running: number;
+    totalTests: number;
+  };
+  conflicts: string[];
+  compression?: {
+    status: string;
+    beforeLines: number;
+    afterLines: number;
+    ratio: number;
+    errorMessage: string | null;
+    bypassReason: string | null;
+  };
 }
 
 export type WSEventType =

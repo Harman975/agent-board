@@ -14,7 +14,9 @@ import {
   uniqueSprintName,
   buildLandingBrief,
   buildSprintReport,
-  mergeWithTestGates,
+  startSprintCompression,
+  bypassSprintCompression,
+  squashMergeToMain,
   type AgentSpec,
 } from "./sprint-orchestrator.js";
 import {
@@ -100,6 +102,9 @@ const TOOLS = [
                 items: { type: "string" },
                 description: "File paths this agent can modify",
               },
+              track: { type: "string", description: "Optional track name for this idea" },
+              approachGroup: { type: "string", description: "Optional competing-approach group id" },
+              approachLabel: { type: "string", description: "Optional human-readable label for this approach" },
             },
             required: ["handle", "mission"],
           },
@@ -121,13 +126,25 @@ const TOOLS = [
     },
   },
   {
-    name: "board_sprint_land",
+    name: "board_sprint_compress",
     description:
-      "Build a landing brief for a sprint. Shows each agent's status, test results, files changed, and merge readiness. Read-only — does not merge. Use board_sprint_merge to actually merge.",
+      "Start or resume sprint synthesis. Merges worker branches into staging and launches the condenser agent.",
     inputSchema: {
       type: "object" as const,
       properties: {
-        name: { type: "string", description: "Sprint name (defaults to latest running sprint)" },
+        name: { type: "string", description: "Sprint name (defaults to latest active sprint)" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "board_sprint_land",
+    description:
+      "Build a landing brief for a sprint. Shows competing approaches, synthesis state, and merge readiness. Read-only — does not merge.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string", description: "Sprint name (defaults to latest active sprint)" },
       },
       required: [],
     },
@@ -135,15 +152,14 @@ const TOOLS = [
   {
     name: "board_sprint_merge",
     description:
-      "Merge passing agents from a sprint into main. Runs tests after each merge. Only merges agents whose tests pass.",
+      "Squash-merge the synthesized sprint result into main. Requires synthesis to be ready, unless bypass_reason is provided after a failed synthesis.",
     inputSchema: {
       type: "object" as const,
       properties: {
         name: { type: "string", description: "Sprint name" },
-        handles: {
-          type: "array",
-          items: { type: "string" },
-          description: "Specific agent handles to merge (merges all passing if omitted)",
+        bypass_reason: {
+          type: "string",
+          description: "Reason to bypass failed synthesis and land the staging branch anyway",
         },
       },
       required: ["name"],
@@ -273,7 +289,7 @@ async function handleTool(
       if (!sprintName) {
         const row = db()
           .prepare(
-            "SELECT name FROM sprints WHERE status = 'running' ORDER BY created_at DESC LIMIT 1"
+            "SELECT name FROM sprints WHERE status IN ('running', 'compressing', 'ready') ORDER BY created_at DESC LIMIT 1"
           )
           .get() as { name: string } | undefined;
         if (!row) return JSON.stringify({ error: "No active sprints" });
@@ -284,12 +300,40 @@ async function handleTool(
       return JSON.stringify(report);
     }
 
+    case "board_sprint_compress": {
+      let sprintName = args.name as string | undefined;
+      if (!sprintName) {
+        const row = db()
+          .prepare(
+            "SELECT name FROM sprints WHERE status IN ('running', 'compressing', 'ready') ORDER BY created_at DESC LIMIT 1"
+          )
+          .get() as { name: string } | undefined;
+        if (!row) return JSON.stringify({ error: "No active sprints" });
+        sprintName = row.name;
+      }
+
+      const result = await startSprintCompression({
+        sprintName,
+        projectDir: PROJECT_DIR,
+        serverUrl: (await rc()).url,
+        db: db(),
+      });
+
+      return JSON.stringify({
+        sprintName,
+        launched: result.launched,
+        merged: result.merged,
+        conflicted: result.conflicted,
+        compression: result.compression,
+      });
+    }
+
     case "board_sprint_land": {
       let sprintName = args.name as string | undefined;
       if (!sprintName) {
         const row = db()
           .prepare(
-            "SELECT name FROM sprints WHERE status = 'running' ORDER BY created_at DESC LIMIT 1"
+            "SELECT name FROM sprints WHERE status IN ('running', 'compressing', 'ready') ORDER BY created_at DESC LIMIT 1"
           )
           .get() as { name: string } | undefined;
         if (!row) return JSON.stringify({ error: "No active sprints" });
@@ -302,21 +346,29 @@ async function handleTool(
 
     case "board_sprint_merge": {
       const sprintName = args.name as string;
-      let handles = args.handles as string[] | undefined;
-
-      if (!handles) {
-        // Merge all passing agents
-        const brief = await buildLandingBrief(sprintName, PROJECT_DIR);
-        handles = brief.agents
-          .filter((a: { status: string }) => a.status === "passed")
-          .map((a: { handle: string }) => a.handle);
+      const bypassReason = args.bypass_reason as string | undefined;
+      const brief = await buildLandingBrief(sprintName, PROJECT_DIR);
+      if (!brief.compression?.stagingBranch) {
+        return JSON.stringify({ error: "Sprint is not ready to merge — no staging branch recorded" });
+      }
+      if (brief.compression.status === "failed" && !bypassReason?.trim()) {
+        return JSON.stringify({ error: "Synthesis failed; provide bypass_reason to merge anyway" });
+      }
+      if (brief.compression.status === "running") {
+        return JSON.stringify({ error: "Synthesis is still running" });
       }
 
-      if (handles.length === 0) {
-        return JSON.stringify({ error: "No passing agents to merge" });
+      if (brief.compression.status === "failed" && bypassReason?.trim()) {
+        bypassSprintCompression(db(), sprintName, bypassReason);
       }
 
-      const result = await mergeWithTestGates(handles, PROJECT_DIR, { db: db() });
+      squashMergeToMain(
+        PROJECT_DIR,
+        brief.compression.stagingBranch,
+        sprintName,
+        brief.sprint.goal,
+        brief.compression.stagingWorktreePath,
+      );
 
       db()
         .prepare(
@@ -326,8 +378,8 @@ async function handleTool(
 
       return JSON.stringify({
         sprintName,
-        merged: result.merged,
-        failed: result.failed,
+        merged: true,
+        bypassed: brief.compression.status === "failed" && !!bypassReason?.trim(),
       });
     }
 

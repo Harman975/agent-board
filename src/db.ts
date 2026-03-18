@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS sprints (
   name TEXT PRIMARY KEY,
   goal TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'running'
-    CHECK(status IN ('running', 'finished', 'failed')),
+    CHECK(status IN ('running', 'compressing', 'ready', 'finished', 'failed')),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   finished_at TEXT
 );
@@ -127,11 +127,34 @@ CREATE TABLE IF NOT EXISTS sprint_agents (
   agent_handle TEXT NOT NULL,
   identity_name TEXT,
   mission TEXT,
+  track TEXT,
+  approach_group TEXT,
+  approach_label TEXT,
   PRIMARY KEY (sprint_name, agent_handle)
+);
+
+CREATE TABLE IF NOT EXISTS sprint_compressions (
+  sprint_name TEXT PRIMARY KEY REFERENCES sprints(name),
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK(status IN ('pending', 'running', 'ready', 'failed', 'bypassed')),
+  staging_branch TEXT,
+  staging_worktree_path TEXT,
+  condenser_handle TEXT REFERENCES agents(handle),
+  before_additions INTEGER NOT NULL DEFAULT 0,
+  before_deletions INTEGER NOT NULL DEFAULT 0,
+  before_files_changed INTEGER NOT NULL DEFAULT 0,
+  after_additions INTEGER,
+  after_deletions INTEGER,
+  after_files_changed INTEGER,
+  error_message TEXT,
+  bypass_reason TEXT,
+  started_at TEXT,
+  finished_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sprint_agents_sprint ON sprint_agents(sprint_name);
 CREATE INDEX IF NOT EXISTS idx_sprint_agents_agent ON sprint_agents(agent_handle);
+CREATE INDEX IF NOT EXISTS idx_sprint_compressions_status ON sprint_compressions(status);
 CREATE INDEX IF NOT EXISTS idx_teams_manager ON teams(manager);
 CREATE INDEX IF NOT EXISTS idx_team_members_agent ON team_members(agent_handle);
 CREATE INDEX IF NOT EXISTS idx_routes_team ON routes(team_name);
@@ -146,6 +169,63 @@ const MIGRATIONS: { version: number; sql: string }[] = [
   {
     version: 1,
     sql: `ALTER TABLE spawns ADD COLUMN exit_code INTEGER;`,
+  },
+  {
+    version: 2,
+    sql: `
+PRAGMA foreign_keys=OFF;
+BEGIN TRANSACTION;
+CREATE TABLE sprints_new (
+  name TEXT PRIMARY KEY,
+  goal TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running'
+    CHECK(status IN ('running', 'compressing', 'ready', 'finished', 'failed')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  finished_at TEXT
+);
+INSERT INTO sprints_new (name, goal, status, created_at, finished_at)
+SELECT name, goal, status, created_at, finished_at FROM sprints;
+DROP TABLE sprints;
+ALTER TABLE sprints_new RENAME TO sprints;
+COMMIT;
+PRAGMA foreign_keys=ON;
+`,
+  },
+  {
+    version: 3,
+    sql: `ALTER TABLE sprint_agents ADD COLUMN track TEXT;`,
+  },
+  {
+    version: 4,
+    sql: `ALTER TABLE sprint_agents ADD COLUMN approach_group TEXT;`,
+  },
+  {
+    version: 5,
+    sql: `ALTER TABLE sprint_agents ADD COLUMN approach_label TEXT;`,
+  },
+  {
+    version: 6,
+    sql: `
+CREATE TABLE IF NOT EXISTS sprint_compressions (
+  sprint_name TEXT PRIMARY KEY REFERENCES sprints(name),
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK(status IN ('pending', 'running', 'ready', 'failed', 'bypassed')),
+  staging_branch TEXT,
+  staging_worktree_path TEXT,
+  condenser_handle TEXT REFERENCES agents(handle),
+  before_additions INTEGER NOT NULL DEFAULT 0,
+  before_deletions INTEGER NOT NULL DEFAULT 0,
+  before_files_changed INTEGER NOT NULL DEFAULT 0,
+  after_additions INTEGER,
+  after_deletions INTEGER,
+  after_files_changed INTEGER,
+  error_message TEXT,
+  bypass_reason TEXT,
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sprint_compressions_status ON sprint_compressions(status);
+`,
   },
 ];
 
@@ -224,4 +304,3 @@ export function initBoard(dir?: string): { adminKey: string } {
 
   return { adminKey: rawKey };
 }
-

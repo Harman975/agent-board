@@ -1318,36 +1318,29 @@ describe("Sprint orchestrator: atomic spawn rollback", () => {
 });
 
 describe("Sprint orchestrator: report protocol injection", () => {
-  it("appends report protocol to identity content", () => {
-    const baseContent = "You are a code reviewer.";
-    const REPORT_PROTOCOL = `
+  it("adds clarity guidance to every sprint mission", async () => {
+    const { decorateSprintMission, SPRINT_CLARITY_PROTOCOL } = await import("./sprint-orchestrator.js");
+    const injected = decorateSprintMission("Ship a smaller auth patch");
+    assert.ok(injected.includes("Ship a smaller auth patch"));
+    assert.ok(injected.includes(SPRINT_CLARITY_PROTOCOL.trim()));
+    assert.ok(!injected.includes("REPORT:"));
+  });
 
-## Completion Report Protocol
-
-When you finish your work, post a structured completion report to #work with this exact format:
-
-REPORT: <one-line summary of what you built/changed>
-ARCHITECTURE: <how it's designed, component boundaries, key decisions>
-DATA FLOW: <input -> transform -> output, how data moves through your changes>
-EDGE CASES: <what edge cases you handled, what's not handled>
-TESTS: <test count, coverage areas, what scenarios are tested>
-
-This report will be shown to the CEO in the sprint finish view.
-`;
-
-    const injected = baseContent + REPORT_PROTOCOL;
-    assert.ok(injected.includes("REPORT:"));
-    assert.ok(injected.includes("ARCHITECTURE:"));
-    assert.ok(injected.includes("DATA FLOW:"));
-    assert.ok(injected.includes("EDGE CASES:"));
-    assert.ok(injected.includes("TESTS:"));
-    assert.ok(injected.startsWith("You are a code reviewer."));
+  it("adds report protocol when a mission does not have an identity wrapper", async () => {
+    const { decorateSprintMission, SPRINT_REPORT_PROTOCOL } = await import("./sprint-orchestrator.js");
+    const injected = decorateSprintMission("Ship a smaller auth patch", { includeReportProtocol: true });
+    assert.ok(injected.includes(SPRINT_REPORT_PROTOCOL.trim()));
+    assert.ok(injected.includes("WHY NOT EXISTING CODE"));
   });
 });
 
 describe("Sprint orchestrator: report parsing", () => {
   it("parses a well-formed agent report", () => {
     const content = `REPORT: Implemented JWT validation
+HYPOTHESIS: Patch the existing middleware instead of adding a new auth layer
+REUSED: Existing request context and token parser
+WHY NOT EXISTING CODE: The old middleware could not short-circuit malformed headers cleanly
+WHY SURVIVES: It keeps auth in one place with the smallest surviving diff
 ARCHITECTURE: Added middleware layer between router and handlers
 DATA FLOW: Request -> Auth header -> JWT decode -> Validate -> Handler
 EDGE CASES: Expired tokens return 401, malformed return 400
@@ -1356,6 +1349,10 @@ TESTS: 12 new tests covering valid, expired, malformed, missing tokens`;
     const report = parseAgentReport(content);
     assert.ok(report);
     assert.equal(report.summary, "Implemented JWT validation");
+    assert.ok(report.hypothesis?.includes("middleware"));
+    assert.ok(report.reused?.includes("token parser"));
+    assert.ok(report.whyNotExistingCode?.includes("malformed headers"));
+    assert.ok(report.whySurvives?.includes("smallest surviving diff"));
     assert.ok(report.architecture?.includes("middleware layer"));
     assert.ok(report.dataFlow?.includes("JWT decode"));
     assert.ok(report.edgeCases?.includes("401"));
@@ -1796,7 +1793,15 @@ describe("Steer --clear resets directives in CLAUDE.md", () => {
 // Section: CEO Console — pure function tests
 // ============================================================
 
-import { slugify, uniqueSprintName, validateDisjointScopes, type AgentSpec } from "./sprint-orchestrator.js";
+import {
+  createStagingBranch,
+  slugify,
+  squashMergeToMain,
+  syncSprintCompressionState,
+  uniqueSprintName,
+  validateDisjointScopes,
+  type AgentSpec,
+} from "./sprint-orchestrator.js";
 import { parseCommand } from "./interactive.js";
 
 describe("slugify", () => {
@@ -1881,6 +1886,14 @@ describe("validateDisjointScopes", () => {
     ];
     assert.doesNotThrow(() => validateDisjointScopes(specs));
   });
+
+  it("allows overlap for competing approaches in the same approach group", () => {
+    const specs: AgentSpec[] = [
+      { handle: "@a", mission: "m", scope: ["src/auth.ts"], approachGroup: "oauth" },
+      { handle: "@b", mission: "m", scope: ["src/auth.ts"], approachGroup: "oauth" },
+    ];
+    assert.doesNotThrow(() => validateDisjointScopes(specs));
+  });
 });
 
 describe("parseCommand", () => {
@@ -1929,8 +1942,6 @@ describe("parseCommand", () => {
 // ============================================================
 // Section 9: Compression pipeline tests
 // ============================================================
-
-import { createStagingBranch, squashMergeToMain } from "./sprint-orchestrator.js";
 
 describe("createStagingBranch", () => {
   let tmpDir: string;
@@ -2003,5 +2014,87 @@ describe("squashMergeToMain", () => {
     // Staging branch should be deleted
     const branches = execSync("git branch", { cwd: tmpDir, encoding: "utf-8" });
     assert.ok(!branches.includes("staging/test-sprint"));
+  });
+});
+
+describe("syncSprintCompressionState", () => {
+  let db: Database.Database;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compression-sync-"));
+    db = initDb(tmpDir);
+    execSync("git init", { cwd: tmpDir, stdio: "pipe" });
+    execSync("git config user.email 'test@test.com'", { cwd: tmpDir, stdio: "pipe" });
+    execSync("git config user.name 'Test'", { cwd: tmpDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(tmpDir, "file.txt"), "hello");
+    execSync("git add . && git commit -m init", { cwd: tmpDir, stdio: "pipe" });
+    db.prepare("INSERT INTO sprints (name, goal, status) VALUES (?, ?, 'compressing')").run("idea-sprint", "test");
+    createAgent(db, { handle: "condenser-idea-sprint", name: "Condenser", mission: "Compress", role: "worker" });
+  });
+
+  afterEach(() => {
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("marks the sprint failed when the condenser exits non-zero", async () => {
+    db.prepare(`
+      INSERT INTO spawns (
+        agent_handle, pid, log_path, worktree_path, branch, started_at, stopped_at, exit_code
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "@condenser-idea-sprint",
+      99991,
+      null,
+      null,
+      "staging/idea-sprint",
+      new Date().toISOString(),
+      new Date().toISOString(),
+      1,
+    );
+    db.prepare(`
+      INSERT INTO sprint_compressions (
+        sprint_name, status, staging_branch, condenser_handle,
+        before_additions, before_deletions, before_files_changed, started_at
+      ) VALUES (?, 'running', ?, ?, 10, 2, 1, ?)
+    `).run("idea-sprint", "staging/idea-sprint", "@condenser-idea-sprint", new Date().toISOString());
+
+    const compression = await syncSprintCompressionState(tmpDir, db, "idea-sprint");
+    const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get("idea-sprint") as Sprint;
+
+    assert.equal(compression?.status, "failed");
+    assert.equal(sprint.status, "failed");
+    assert.match(compression?.error_message ?? "", /Condenser exited with code 1/);
+  });
+
+  it("marks stale compression runs as failed after the timeout window", async () => {
+    db.prepare(`
+      INSERT INTO spawns (
+        agent_handle, pid, log_path, worktree_path, branch, started_at, stopped_at, exit_code
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "@condenser-idea-sprint",
+      99992,
+      null,
+      null,
+      "staging/idea-sprint",
+      "2000-01-01T00:00:00Z",
+      null,
+      null,
+    );
+    db.prepare(`
+      INSERT INTO sprint_compressions (
+        sprint_name, status, staging_branch, condenser_handle,
+        before_additions, before_deletions, before_files_changed, started_at
+      ) VALUES (?, 'running', ?, ?, 10, 2, 1, ?)
+    `).run("idea-sprint", "staging/idea-sprint", "@condenser-idea-sprint", "2000-01-01T00:00:00Z");
+
+    const compression = await syncSprintCompressionState(tmpDir, db, "idea-sprint");
+    const sprint = db.prepare("SELECT * FROM sprints WHERE name = ?").get("idea-sprint") as Sprint;
+
+    assert.equal(compression?.status, "failed");
+    assert.equal(sprint.status, "failed");
+    assert.match(compression?.error_message ?? "", /exceeded 10 minutes/);
   });
 });

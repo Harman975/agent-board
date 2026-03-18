@@ -24,7 +24,9 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "test": "node --import tsx --test 'src/**/*.test.ts'",
+    "test": "npm run test:backend && npm run test:frontend",
+    "test:backend": "node --import tsx --test 'src/**/*.test.ts'",
+    "test:frontend": "npm test --prefix frontend",
     "board": "node --import tsx src/cli.ts"
   },
   "dependencies": {
