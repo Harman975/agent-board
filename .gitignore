@@ -13,3 +13,4 @@ eval.log
 results.md
 agent.log
 sprint-*.json
+.mcp.json

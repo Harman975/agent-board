@@ -73,14 +73,21 @@ export const SprintLauncher: React.FC<SprintLauncherProps> = ({ projectId, proje
 
   return (
     <div className="sprint-launcher">
-      <p className="section-kicker">New Sprint</p>
+      <p className="section-kicker">
+        <span className="material-symbols-outlined kicker-icon">bolt</span>
+        New Sprint
+      </p>
       <h2>Start with a clear question</h2>
       {projectName && (
-        <p className="plan-goal">Project: {projectName}</p>
+        <p className="plan-goal">
+          <span className="material-symbols-outlined plan-goal-icon">folder_open</span>
+          Project: {projectName}
+        </p>
       )}
       {!suggestion ? (
         <div className="launcher-form">
           <label>
+            <span className="material-symbols-outlined launcher-label-icon">edit_note</span>
             What are we trying to learn?
             <textarea
               value={goal}
@@ -95,6 +102,7 @@ export const SprintLauncher: React.FC<SprintLauncherProps> = ({ projectId, proje
               onClick={handleSuggest}
               disabled={loading || !goal.trim()}
             >
+              <span className="material-symbols-outlined btn-icon">auto_awesome</span>
               {loading ? 'Drafting routes...' : 'Draft Routes'}
             </button>
             <button className="btn-secondary" onClick={handleCancel}>Cancel</button>
@@ -102,12 +110,18 @@ export const SprintLauncher: React.FC<SprintLauncherProps> = ({ projectId, proje
         </div>
       ) : (
         <div className="launcher-plan">
-          <h3>Suggested routes</h3>
+          <h3>
+            <span className="material-symbols-outlined launcher-plan-icon">route</span>
+            Suggested routes
+          </h3>
           <p className="plan-goal">{suggestion.goal}</p>
           <div className="plan-route-list">
             {suggestion.tasks.map((task: SprintTask, i: number) => (
               <article key={i} className="plan-route-card">
-                <p className="plan-route-label">Route {i + 1}</p>
+                <p className="plan-route-label">
+                  <span className="material-symbols-outlined route-num-icon">alt_route</span>
+                  Route {i + 1}
+                </p>
                 <h4>{task.mission}</h4>
                 {(task.approachLabel || task.track) && (
                   <p className="plan-route-context">
@@ -124,9 +138,11 @@ export const SprintLauncher: React.FC<SprintLauncherProps> = ({ projectId, proje
               onClick={handleApprove}
               disabled={spawning}
             >
+              <span className="material-symbols-outlined btn-icon">rocket_launch</span>
               {spawning ? 'Starting sprint...' : 'Start Sprint'}
             </button>
             <button className="btn-secondary" onClick={() => setSuggestion(null)}>
+              <span className="material-symbols-outlined btn-icon">arrow_back</span>
               Back
             </button>
             <button className="btn-secondary" onClick={handleCancel}>Cancel</button>

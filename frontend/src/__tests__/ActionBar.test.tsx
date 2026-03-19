@@ -45,6 +45,8 @@ function renderBar(overrides: Partial<ComponentProps<typeof ActionBar>> = {}) {
   const props: ComponentProps<typeof ActionBar> = {
     sprint,
     connected: true,
+    activeTab: 'board',
+    onTabChange: vi.fn(),
     onToggleChat: vi.fn(),
     chatOpen: false,
     onToggleAdvanced: vi.fn(),
@@ -56,31 +58,51 @@ function renderBar(overrides: Partial<ComponentProps<typeof ActionBar>> = {}) {
 }
 
 describe('ActionBar', () => {
-  it('shows the sprint goal and English summary', () => {
+  it('shows the brand name', () => {
     renderBar();
-    expect(screen.getByText('Build the board')).toBeInTheDocument();
-    expect(screen.getByText('2 routes are in play. 1 route is ready to compare.')).toBeInTheDocument();
+    expect(screen.getByText('Cognitive Canvas')).toBeInTheDocument();
   });
 
-  it('shows summary pills for phase and ready routes', () => {
+  it('shows navigation tabs', () => {
+    renderBar();
+    expect(screen.getByRole('tab', { name: 'Overview' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Timeline' })).toBeInTheDocument();
+  });
+
+  it('marks the active tab', () => {
+    renderBar({ activeTab: 'timeline' });
+    const timelineTab = screen.getByRole('tab', { name: 'Timeline' });
+    expect(timelineTab.classList.contains('active')).toBe(true);
+  });
+
+  it('fires onTabChange when a tab is clicked', () => {
+    const onTabChange = vi.fn();
+    renderBar({ onTabChange });
+    fireEvent.click(screen.getByRole('tab', { name: 'Timeline' }));
+    expect(onTabChange).toHaveBeenCalledWith('timeline');
+  });
+
+  it('shows technical tabs only when advancedOpen is true', () => {
+    renderBar({ advancedOpen: false });
+    expect(screen.queryByRole('tab', { name: 'Logs' })).not.toBeInTheDocument();
+
+    renderBar({ advancedOpen: true });
+    expect(screen.getByRole('tab', { name: 'Logs' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Architecture' })).toBeInTheDocument();
+  });
+
+  it('shows phase status when sprint is active', () => {
     renderBar();
     expect(screen.getByText('Exploring')).toBeInTheDocument();
-    expect(screen.getByText('1 ready to compare')).toBeInTheDocument();
   });
 
-  it('shows no active sprint when sprint is null', () => {
-    renderBar({ sprint: null, connected: false });
-    expect(screen.getByText('No active sprint')).toBeInTheDocument();
-    expect(screen.getByText('Start a new sprint to explore a small set of clear routes.')).toBeInTheDocument();
-  });
-
-  it('shows connection status', () => {
-    renderBar({ connected: true });
+  it('shows connection status when no sprint', () => {
+    renderBar({ sprint: null, connected: true });
     expect(screen.getByText('Live')).toBeInTheDocument();
   });
 
-  it('shows polling status when disconnected', () => {
-    renderBar({ connected: false });
+  it('shows polling status when disconnected and no sprint', () => {
+    renderBar({ sprint: null, connected: false });
     expect(screen.getByText('Polling')).toBeInTheDocument();
   });
 

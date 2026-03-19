@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Collaborators | Cognitive Canvas</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;family=Manrope:wght@500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "surface-container-high": "#e2e9ec",
+              "on-primary-container": "#525151",
+              "inverse-on-surface": "#9b9d9e",
+              "on-secondary-container": "#3f33d6",
+              "on-primary-fixed": "#403f3f",
+              "primary-container": "#e5e2e1",
+              "outline": "#737c7f",
+              "background": "#f8f9fa",
+              "on-surface": "#2b3437",
+              "tertiary-dim": "#005e56",
+              "surface-container": "#eaeff1",
+              "surface-bright": "#f8f9fa",
+              "tertiary-container": "#91feef",
+              "on-tertiary-container": "#006259",
+              "on-secondary-fixed-variant": "#4a40e0",
+              "surface-tint": "#5f5e5e",
+              "secondary-fixed": "#e2dfff",
+              "on-primary": "#faf7f6",
+              "on-surface-variant": "#586064",
+              "on-secondary": "#fbf7ff",
+              "secondary-container": "#e2dfff",
+              "primary": "#5f5e5e",
+              "primary-fixed-dim": "#d6d4d3",
+              "outline-variant": "#abb3b7",
+              "tertiary": "#006b62",
+              "inverse-surface": "#0c0f10",
+              "primary-fixed": "#e5e2e1",
+              "surface-dim": "#d1dce0",
+              "on-tertiary-fixed": "#004e47",
+              "on-error": "#fff7f7",
+              "surface-container-low": "#f1f4f6",
+              "error": "#9e3f4e",
+              "on-tertiary-fixed-variant": "#006d64",
+              "tertiary-fixed-dim": "#83efe1",
+              "surface-variant": "#dbe4e7",
+              "on-secondary-fixed": "#2a13c5",
+              "inverse-primary": "#ffffff",
+              "on-primary-fixed-variant": "#5c5b5b",
+              "error-dim": "#4f0116",
+              "surface": "#f8f9fa",
+              "surface-container-lowest": "#ffffff",
+              "on-error-container": "#782232",
+              "on-background": "#2b3437",
+              "error-container": "#ff8b9a",
+              "primary-dim": "#535252",
+              "secondary": "#4e45e4",
+              "secondary-fixed-dim": "#d2d0ff",
+              "secondary-dim": "#4135d8",
+              "tertiary-fixed": "#91feef",
+              "surface-container-highest": "#dbe4e7",
+              "on-tertiary": "#e2fff9"
+            },
+            fontFamily: {
+              "headline": ["Manrope"],
+              "body": ["Inter"],
+              "label": ["Inter"]
+            },
+            borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+          },
+        },
+      }
+    </script>
+<style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }
+      .agent-pulse {
+        position: relative;
+      }
+      .agent-pulse::after {
+        content: '';
+        position: absolute;
+        width: 8px;
+        height: 8px;
+        background-color: #006b62;
+        border-radius: 50%;
+        top: 0;
+        right: 0;
+        box-shadow: 0 0 4px rgba(0, 107, 98, 0.4);
+      }
+    </style>
+</head>
+<body class="bg-background text-on-surface font-body selection:bg-secondary-container">
+<!-- SideNavBar Component -->
+<aside class="h-screen w-64 fixed left-0 top-0 flex flex-col py-8 px-4 bg-slate-50 dark:bg-slate-900 z-50">
+<div class="mb-10 px-2">
+<h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-headline">Cognitive Canvas</h1>
+<p class="text-xs text-on-surface-variant font-medium tracking-wide">AI Agent Workspace</p>
+</div>
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-3 px-3 py-2.5 rounded text-slate-600 font-['Manrope'] tracking-wide text-sm font-medium hover:bg-slate-200/50 transition-colors" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="folder_open">folder_open</span>
+                Projects
+            </a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded text-slate-600 font-['Manrope'] tracking-wide text-sm font-medium hover:bg-slate-200/50 transition-colors" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="lightbulb">lightbulb</span>
+                Ideas
+            </a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded text-slate-600 font-['Manrope'] tracking-wide text-sm font-medium hover:bg-slate-200/50 transition-colors" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="archive">archive</span>
+                Archive
+            </a>
+<!-- Active State: Collaborators -->
+<a class="flex items-center gap-3 px-3 py-2.5 rounded font-['Manrope'] tracking-wide text-sm bg-slate-200 dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 font-semibold transition-colors" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="group">group</span>
+                Collaborators
+            </a>
+<a class="flex items-center gap-3 px-3 py-2.5 rounded text-slate-600 font-['Manrope'] tracking-wide text-sm font-medium hover:bg-slate-200/50 transition-colors" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="settings">settings</span>
+                Settings
+            </a>
+</nav>
+<div class="mt-auto px-2">
+<button class="w-full flex items-center justify-center gap-2 py-3 px-4 bg-gradient-to-br from-secondary to-secondary-dim text-on-secondary rounded-xl font-semibold text-sm shadow-lg shadow-secondary/10 active:scale-95 transition-transform">
+<span class="material-symbols-outlined text-lg" data-icon="add">add</span>
+                New Project
+            </button>
+</div>
+</aside>
+<!-- TopNavBar Component -->
+<header class="fixed top-0 right-0 left-64 h-16 z-40 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md flex items-center justify-between px-12">
+<div class="flex items-center gap-8">
+<nav class="flex gap-6 font-['Inter'] text-sm font-semibold uppercase tracking-widest text-slate-500">
+<a class="hover:text-indigo-500 transition-opacity" href="#">Overview</a>
+<a class="text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-600" href="#">Analysis</a>
+<a class="hover:text-indigo-500 transition-opacity" href="#">Timeline</a>
+</nav>
+</div>
+<div class="flex items-center gap-6">
+<div class="relative group">
+<input class="bg-surface-container-lowest border-none rounded-full px-6 py-2 text-sm w-64 focus:ring-2 focus:ring-secondary/20 shadow-sm transition-all outline-none" placeholder="Command Search..." type="text"/>
+<span class="material-symbols-outlined absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 text-lg" data-icon="search">search</span>
+</div>
+<div class="flex items-center gap-4 text-slate-500">
+<button class="material-symbols-outlined hover:text-secondary transition-colors" data-icon="notifications">notifications</button>
+<button class="material-symbols-outlined hover:text-secondary transition-colors" data-icon="help_outline">help_outline</button>
+<img class="w-8 h-8 rounded-full border border-outline-variant/15" data-alt="User profile avatar" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAUQprCFM8p0zDpryxovbf2Vqfsg04UCNWpLLhYKMXlISWtVMouRdJE7QpiW5H6lUGWAV2Mu0BBGeWACxLtNpkzg_Q6S8wLQrs4yH9hQYZ0x_93Bc9qyza2dLxoADNDPyNM8ErWJjik_T0ut6Tsiafpku7lUOLHJgoC-KfCQ8RO7llXhQ366fQKx95vfPlnIk2JLk1wgHoLSDZbCqijk0uKp7FGn7uJ_unXkJMhtB4qKxbE5luYzGFCOQW3WOw6gXSLO2FuYUj9h2L6"/>
+</div>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="ml-64 pt-24 pb-12 px-12 min-h-screen">
+<div class="max-w-7xl mx-auto">
+<!-- Header Section -->
+<div class="mb-12 flex justify-between items-end">
+<div>
+<h2 class="text-4xl font-extrabold font-headline tracking-tight text-on-surface mb-2">Team Governance</h2>
+<p class="text-on-surface-variant font-medium">Coordinate between human intelligence and autonomous agents.</p>
+</div>
+<div class="flex gap-4">
+<button class="px-6 py-2.5 rounded-xl border border-outline-variant/15 text-on-surface font-semibold text-sm hover:bg-surface-container-high transition-colors">
+                        Export Logs
+                    </button>
+<button class="px-6 py-2.5 rounded-xl bg-gradient-to-br from-secondary to-secondary-dim text-on-secondary font-semibold text-sm shadow-md active:scale-95 transition-all">
+                        Invite Member
+                    </button>
+</div>
+</div>
+<!-- Bento Grid Layout -->
+<div class="grid grid-cols-12 gap-8">
+<!-- Active Agents (Featured Bento Item) -->
+<section class="col-span-12 lg:col-span-8 space-y-6">
+<div class="flex items-center justify-between">
+<h3 class="font-['Inter'] text-xs font-bold uppercase tracking-widest text-on-surface-variant">Active AI Agents</h3>
+<span class="px-3 py-1 rounded-full bg-tertiary-container text-on-tertiary-container text-xs font-bold">4 Running</span>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+<!-- Agent Card 1 -->
+<div class="bg-surface-container-lowest p-6 rounded-xl relative group overflow-hidden transition-all hover:bg-surface-container-low border-l-2 border-tertiary">
+<div class="flex justify-between items-start mb-6">
+<div class="w-12 h-12 rounded-lg bg-tertiary-container flex items-center justify-center agent-pulse">
+<span class="material-symbols-outlined text-tertiary" data-icon="neurology">neurology</span>
+</div>
+<span class="material-symbols-outlined text-outline-variant opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" data-icon="more_vert">more_vert</span>
+</div>
+<h4 class="font-headline font-bold text-lg text-on-surface mb-1">Architect-v2</h4>
+<p class="text-sm text-on-surface-variant mb-4">Neural Graph Optimization &amp; Infrastructure</p>
+<div class="flex items-center justify-between pt-4 border-t border-outline-variant/10">
+<span class="text-[10px] font-bold uppercase tracking-tighter text-outline">Role: Executor</span>
+<span class="text-[10px] font-medium text-tertiary flex items-center gap-1">
+<span class="w-1 h-1 rounded-full bg-tertiary animate-pulse"></span>
+                                    Processing Task #842
+                                </span>
+</div>
+</div>
+<!-- Agent Card 2 -->
+<div class="bg-surface-container-lowest p-6 rounded-xl relative group overflow-hidden transition-all hover:bg-surface-container-low border-l-2 border-tertiary">
+<div class="flex justify-between items-start mb-6">
+<div class="w-12 h-12 rounded-lg bg-tertiary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-tertiary" data-icon="query_stats">query_stats</span>
+</div>
+<span class="material-symbols-outlined text-outline-variant opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" data-icon="more_vert">more_vert</span>
+</div>
+<h4 class="font-headline font-bold text-lg text-on-surface mb-1">Analyst.beta</h4>
+<p class="text-sm text-on-surface-variant mb-4">Market Sentiment &amp; Pattern Recognition</p>
+<div class="flex items-center justify-between pt-4 border-t border-outline-variant/10">
+<span class="text-[10px] font-bold uppercase tracking-tighter text-outline">Role: Observer</span>
+<span class="text-[10px] font-medium text-on-surface-variant">Idle for 14m</span>
+</div>
+</div>
+</div>
+<!-- Human Collaborators List -->
+<div class="mt-12">
+<h3 class="font-['Inter'] text-xs font-bold uppercase tracking-widest text-on-surface-variant mb-6">Core Team Members</h3>
+<div class="bg-surface-container-lowest rounded-xl overflow-hidden">
+<table class="w-full text-left border-collapse">
+<thead class="bg-surface-container-low">
+<tr>
+<th class="px-8 py-4 text-[10px] font-bold text-outline uppercase tracking-widest">Collaborator</th>
+<th class="px-8 py-4 text-[10px] font-bold text-outline uppercase tracking-widest">Permissions</th>
+<th class="px-8 py-4 text-[10px] font-bold text-outline uppercase tracking-widest">Recent Activity</th>
+<th class="px-8 py-4 text-[10px] font-bold text-outline uppercase tracking-widest"></th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline-variant/10">
+<tr class="hover:bg-surface-container-high/30 transition-colors">
+<td class="px-8 py-5">
+<div class="flex items-center gap-4">
+<img class="w-10 h-10 rounded-full bg-slate-200" data-alt="Portrait of Lena Sterling" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD08CqzTnO-DBLTjyi2Jg6cRyavyAUjC7pic_whXYw1TJ6xsmtvx5tz5DOqqQ_37xbmll0BxyMZCyL6DD0YiILnye_1SDtacc60Xdd9ethb13VRHmhQHdjc8dar3KJqhGAfAoMN14dFpf4HYsg5Cqij2hvRufPuf2RfmqbD_5_WCu0Alk6RxCIxuEYCI3rnN1D6rI8OJnJ2bDaimTIS-o5LrFD0-Bjqwzfal6YqekQq9WVdgWjm8wCKGmy_CWdn1F9L7OEtqm0c7Ed5"/>
+<div>
+<div class="font-bold text-on-surface">Lena Sterling</div>
+<div class="text-xs text-on-surface-variant">l.sterling@cognitive.ai</div>
+</div>
+</div>
+</td>
+<td class="px-8 py-5">
+<span class="px-3 py-1 rounded bg-secondary-container text-on-secondary-container text-xs font-bold">Admin</span>
+</td>
+<td class="px-8 py-5 text-sm text-on-surface-variant">
+                                            Modified agent: <span class="font-semibold text-on-surface">Architect-v2</span>
+<div class="text-[10px] text-outline mt-1">2 hours ago</div>
+</td>
+<td class="px-8 py-5 text-right">
+<button class="material-symbols-outlined text-outline hover:text-on-surface" data-icon="settings">settings</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-high/30 transition-colors">
+<td class="px-8 py-5">
+<div class="flex items-center gap-4">
+<img class="w-10 h-10 rounded-full bg-slate-200" data-alt="Portrait of Marcus Thorne" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAmbtkpSgQFwQQscCgy6vew8bXrk68xNSgQrPFvkSnr39Iz4pNJPtMvl6fcL6lVr-gF6DugoTTNihGVoAvgFfdePn0KPDSTudEEi9EhpjrCxhyYLEE868DpYnSRDYtaxK35hcTewaCfEH90e4du_peYYP9qd9lXvFgduGgjHympXHj36h84gv0Lk2ghGWAMEUw1Vndq16s-EssWeMRPojkrcEUYvhGzDKpN3LgWzYQPsUsPJ1bQgMe1QKopt3Zg2v5BrZ74k7-fpD75"/>
+<div>
+<div class="font-bold text-on-surface">Marcus Thorne</div>
+<div class="text-xs text-on-surface-variant">m.thorne@lab.io</div>
+</div>
+</div>
+</td>
+<td class="px-8 py-5">
+<span class="px-3 py-1 rounded bg-surface-container-high text-on-surface-variant text-xs font-bold">Editor</span>
+</td>
+<td class="px-8 py-5 text-sm text-on-surface-variant">
+                                            Uploaded <span class="font-semibold text-on-surface">Q3 Dataset</span>
+<div class="text-[10px] text-outline mt-1">Yesterday</div>
+</td>
+<td class="px-8 py-5 text-right">
+<button class="material-symbols-outlined text-outline hover:text-on-surface" data-icon="settings">settings</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+<!-- Sidebar Activity/Stats -->
+<aside class="col-span-12 lg:col-span-4 space-y-8">
+<!-- Activity Feed Card -->
+<div class="bg-surface-container-low p-8 rounded-xl">
+<h3 class="font-['Inter'] text-xs font-bold uppercase tracking-widest text-on-surface-variant mb-8">System Pulse</h3>
+<div class="space-y-8 relative before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-[2px] before:bg-outline-variant/20">
+<!-- Event 1 -->
+<div class="relative pl-8">
+<div class="absolute left-0 top-1 w-6 h-6 rounded-full bg-secondary-container flex items-center justify-center z-10">
+<span class="material-symbols-outlined text-[14px] text-secondary" data-icon="key">key</span>
+</div>
+<div class="text-sm font-bold text-on-surface">New API Key Generated</div>
+<p class="text-xs text-on-surface-variant mt-1">Lena Sterling authorized a new production environment key.</p>
+<span class="text-[10px] text-outline block mt-2">12:45 PM</span>
+</div>
+<!-- Event 2 -->
+<div class="relative pl-8">
+<div class="absolute left-0 top-1 w-6 h-6 rounded-full bg-tertiary-container flex items-center justify-center z-10">
+<span class="material-symbols-outlined text-[14px] text-tertiary" data-icon="bolt">bolt</span>
+</div>
+<div class="text-sm font-bold text-on-surface">Agent Escalation</div>
+<p class="text-xs text-on-surface-variant mt-1">Architect-v2 requested manual review for data discrepancy.</p>
+<span class="text-[10px] text-outline block mt-2">09:30 AM</span>
+</div>
+</div>
+<button class="w-full mt-10 py-3 text-xs font-bold text-secondary tracking-widest uppercase hover:bg-secondary/5 transition-colors rounded">View Full Audit Trail</button>
+</div>
+<!-- Usage Metrics -->
+<div class="bg-surface-container-highest p-8 rounded-xl">
+<h3 class="font-['Inter'] text-xs font-bold uppercase tracking-widest text-on-surface-variant mb-6">Token Distribution</h3>
+<div class="space-y-6">
+<div>
+<div class="flex justify-between text-[10px] font-bold uppercase mb-2">
+<span>Human Operations</span>
+<span>42%</span>
+</div>
+<div class="h-1.5 w-full bg-outline-variant/20 rounded-full overflow-hidden">
+<div class="h-full bg-secondary w-[42%]"></div>
+</div>
+</div>
+<div>
+<div class="flex justify-between text-[10px] font-bold uppercase mb-2">
+<span>Autonomous Agents</span>
+<span>58%</span>
+</div>
+<div class="h-1.5 w-full bg-outline-variant/20 rounded-full overflow-hidden">
+<div class="h-full bg-tertiary w-[58%]"></div>
+</div>
+</div>
+</div>
+</div>
+</aside>
+</div>
+</div>
+</main>
+</body></html>

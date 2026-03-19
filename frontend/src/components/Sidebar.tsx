@@ -23,6 +23,14 @@ function elapsed(createdAt: string): string {
   return `${hours}h ${remaining}m`;
 }
 
+const TONE_DOTS: Record<string, string> = {
+  blocked: 'var(--blocked)',
+  review: 'var(--review)',
+  in_progress: 'var(--in-progress)',
+  planning: 'var(--planning)',
+  done: 'var(--done)',
+};
+
 export const Sidebar: React.FC<SidebarProps> = ({
   projects,
   selectedProjectId,
@@ -40,116 +48,159 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside className="sidebar" aria-label="Sprint sidebar">
-      <div className="sidebar-section">
-        <h3>Projects</h3>
+      {/* Project header with brand icon */}
+      <div className="sidebar-brand">
+        <div className="brand-icon">
+          <span className="material-symbols-outlined">token</span>
+        </div>
+        <div>
+          <h2 className="brand-title">
+            {selectedProject ? selectedProject.name : 'AgentBoard'}
+          </h2>
+          <p className="brand-subtitle">
+            {selectedProject
+              ? selectedProject.mission || selectedProject.statusLabel
+              : 'Strategic Decisions'}
+          </p>
+        </div>
+      </div>
+
+      {/* High-Level Projects nav section */}
+      <div className="sidebar-section-label">High-Level Projects</div>
+      <nav className="sidebar-nav">
         {projects.length > 0 ? (
-          <div className="sidebar-list">
-            {projects.map((project) => (
-              <button
-                key={project.id}
-                className={`sidebar-project ${selectedProjectId === project.id ? 'active' : ''}`}
-                onClick={() => onSelectProject(project.id)}
-              >
-                <div className="sidebar-project-header">
-                  <p className="sidebar-project-name">{project.name}</p>
-                  {project.needsInputCount > 0 && (
-                    <span className="sidebar-project-pill">{project.needsInputCount}</span>
-                  )}
-                </div>
-                <p className="sidebar-project-meta">
-                  {project.statusLabel}
-                  {project.ideaCount > 0 ? ` · ${project.ideaCount} ideas` : ''}
-                </p>
-              </button>
-            ))}
-          </div>
+          projects.map((project) => (
+            <a
+              key={project.id}
+              className={`sidebar-nav-item${selectedProjectId === project.id ? ' active' : ''}`}
+              onClick={() => onSelectProject(project.id)}
+              role="button"
+              tabIndex={0}
+            >
+              <span className="material-symbols-outlined">folder_open</span>
+              <span>{project.name}</span>
+              {project.needsInputCount > 0 && (
+                <span className="nav-count">{project.needsInputCount}</span>
+              )}
+              {project.needsInputCount === 0 && project.ideaCount > 0 && (
+                <span className="nav-count">{project.ideaCount}</span>
+              )}
+            </a>
+          ))
         ) : (
           <p className="sidebar-empty">No projects yet.</p>
         )}
-      </div>
 
-      <div className="sidebar-section">
-        <h3>Current Project</h3>
-        {selectedProject ? (
+        <a
+          className="sidebar-nav-item"
+          onClick={() => onOpenTab('board')}
+          role="button"
+          tabIndex={0}
+        >
+          <span className="material-symbols-outlined">dashboard</span>
+          <span>Board</span>
+        </a>
+        <a
+          className="sidebar-nav-item"
+          onClick={() => onOpenTab('timeline')}
+          role="button"
+          tabIndex={0}
+        >
+          <span className="material-symbols-outlined">timeline</span>
+          <span>Timeline</span>
+        </a>
+        {advancedMode && (
           <>
-            <p className="sidebar-sprint-name">{selectedProject.name}</p>
-            <p className="sidebar-note">{selectedProject.mission}</p>
-            <p className="sidebar-label">{selectedProject.statusLabel}</p>
-            {sprint ? (
-              <p className="sidebar-elapsed">{elapsed(sprint.createdAt)} elapsed</p>
-            ) : (
-              <p className="sidebar-note">No active sprint right now.</p>
+            <a
+              className="sidebar-nav-item"
+              onClick={() => onOpenTab('logs')}
+              role="button"
+              tabIndex={0}
+            >
+              <span className="material-symbols-outlined">description</span>
+              <span>Logs</span>
+            </a>
+            <a
+              className="sidebar-nav-item"
+              onClick={() => onOpenTab('architecture')}
+              role="button"
+              tabIndex={0}
+            >
+              <span className="material-symbols-outlined">account_tree</span>
+              <span>Architecture</span>
+            </a>
+          </>
+        )}
+      </nav>
+
+      {/* Active Ideas & Routes sub-navigation */}
+      <div className="sidebar-section-label">Active Ideas &amp; Routes</div>
+      <nav className="sidebar-nav">
+        {selectedProject && sprint ? (
+          <a className="sidebar-nav-item sub-nav" role="button" tabIndex={0}>
+            <span className="material-symbols-outlined text-secondary">lightbulb</span>
+            <span>Current Workspace</span>
+            {sprint && (
+              <span className="nav-elapsed">
+                {elapsed(sprint.createdAt)}
+              </span>
             )}
-          </>
+          </a>
         ) : (
-          <p className="sidebar-empty">Select a project to focus the board.</p>
+          <a className="sidebar-nav-item sub-nav" role="button" tabIndex={0}>
+            <span className="material-symbols-outlined text-secondary">lightbulb</span>
+            <span>No active workspace</span>
+          </a>
         )}
-      </div>
 
-      <div className="sidebar-section">
-        <h3>Ideas</h3>
         {ideas.length > 0 ? (
-          <div className="sidebar-list">
-            {ideas.map((idea) => (
-              <button
-                key={idea.id}
-                className="sidebar-idea"
-                onClick={() => {
-                  onOpenTab('board');
-                  onFocusIdea(idea.id);
-                }}
-              >
-                <div className="sidebar-idea-main">
-                  <p className="sidebar-project-name">{idea.title}</p>
-                  {idea.track && <p className="sidebar-idea-track">{idea.track}</p>}
-                </div>
-                <span className={`sidebar-idea-status tone-${idea.tone}`}>{idea.status}</span>
-              </button>
-            ))}
-          </div>
+          ideas.map((idea) => (
+            <a
+              key={idea.id}
+              className="sidebar-nav-sub"
+              onClick={() => {
+                onOpenTab('board');
+                onFocusIdea(idea.id);
+              }}
+              role="button"
+              tabIndex={0}
+            >
+              <div
+                className="idea-dot"
+                style={{ background: TONE_DOTS[idea.tone] ?? 'var(--planning)' }}
+              />
+              <span className="sidebar-nav-sub-label">{idea.title}</span>
+              <span className={`sidebar-nav-sub-status tone-${idea.tone}`}>{idea.status}</span>
+            </a>
+          ))
         ) : (
-          <p className="sidebar-empty">The ideas for this project will appear here once a sprint starts.</p>
+          <p className="sidebar-empty">Ideas will appear here once a sprint starts.</p>
         )}
+      </nav>
+
+      {/* Clarity compact summary */}
+      <div className="sidebar-clarity">
+        <div className="sidebar-section-label">Clarity</div>
+        <p className="sidebar-clarity-phase">{overview.phase}</p>
+        <p className="sidebar-clarity-text">{overview.recommendation}</p>
       </div>
 
-      <div className="sidebar-section">
-        <h3>Clarity</h3>
-        <p className="sidebar-label">Current picture</p>
-        <p className="sidebar-note">{overview.summary}</p>
-        <p className="sidebar-label">Best next move</p>
-        <p className="sidebar-note">{overview.recommendation}</p>
-      </div>
+      {/* Settings nav item */}
+      <a className="sidebar-nav-item sidebar-settings" role="button" tabIndex={0}>
+        <span className="material-symbols-outlined">tune</span>
+        <span>Settings</span>
+      </a>
 
-      <div className="sidebar-section sidebar-actions">
-        <h3>Actions</h3>
-        <button className="btn-primary sidebar-btn" onClick={onNewSprint}>Start New Sprint</button>
-        {sprint && (
-          <>
-            <button className="btn-secondary sidebar-btn" onClick={() => onOpenTab('board')}>
-              Open Board
-            </button>
-            <button className="btn-secondary sidebar-btn" onClick={() => onOpenTab('timeline')}>
-              Open Timeline
-            </button>
-          </>
-        )}
-      </div>
-
-      {advancedMode && (
-        <div className="sidebar-section sidebar-actions">
-          <h3>Technical</h3>
-          <button className="btn-secondary sidebar-btn" onClick={() => onOpenTab('logs')}>
-            Logs
-          </button>
-          <button className="btn-secondary sidebar-btn" onClick={() => onOpenTab('architecture')}>
-            Architecture Map
-          </button>
+      {/* Bottom actions */}
+      <div className="sidebar-bottom">
+        <button className="btn-primary sidebar-btn" onClick={onNewSprint}>
+          <span className="material-symbols-outlined btn-icon">add</span>
+          + New Project
+        </button>
+        <div className="sidebar-connection">
+          <span className={`connection-dot ${connected ? 'connected' : 'disconnected'}`} />
+          <span>{connected ? 'Live updates' : 'Polling for changes'}</span>
         </div>
-      )}
-
-      <div className="sidebar-section sidebar-connection">
-        <span className={`connection-dot ${connected ? 'connected' : 'disconnected'}`} />
-        <span>{connected ? 'Live updates' : 'Polling for changes'}</span>
       </div>
     </aside>
   );

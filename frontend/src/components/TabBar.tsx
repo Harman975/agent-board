@@ -7,14 +7,14 @@ interface TabBarProps {
   advancedMode: boolean;
 }
 
-const PRIMARY_TABS: { id: TabId; label: string }[] = [
-  { id: 'board', label: 'Board' },
-  { id: 'timeline', label: 'Timeline' },
+const PRIMARY_TABS: { id: TabId; label: string; icon: string }[] = [
+  { id: 'board', label: 'Board', icon: 'dashboard' },
+  { id: 'timeline', label: 'Timeline', icon: 'timeline' },
 ];
 
-const TECHNICAL_TABS: { id: TabId; label: string }[] = [
-  { id: 'logs', label: 'Logs' },
-  { id: 'architecture', label: 'Architecture' },
+const TECHNICAL_TABS: { id: TabId; label: string; icon: string }[] = [
+  { id: 'logs', label: 'Logs', icon: 'description' },
+  { id: 'architecture', label: 'Architecture', icon: 'account_tree' },
 ];
 
 export const TabBar: React.FC<TabBarProps> = ({ activeTab, onTabChange, advancedMode }) => {
@@ -28,6 +28,7 @@ export const TabBar: React.FC<TabBarProps> = ({ activeTab, onTabChange, advanced
           className={`tab-button ${activeTab === tab.id ? 'active' : ''}`}
           onClick={() => onTabChange(tab.id)}
         >
+          <span className="material-symbols-outlined tab-icon">{tab.icon}</span>
           {tab.label}
         </button>
       ))}
@@ -42,6 +43,7 @@ export const TabBar: React.FC<TabBarProps> = ({ activeTab, onTabChange, advanced
               className={`tab-button tab-button-technical ${activeTab === tab.id ? 'active' : ''}`}
               onClick={() => onTabChange(tab.id)}
             >
+              <span className="material-symbols-outlined tab-icon">{tab.icon}</span>
               {tab.label}
             </button>
           ))}

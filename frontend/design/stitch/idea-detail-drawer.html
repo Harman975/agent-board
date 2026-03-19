@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Cognitive Canvas - Idea Detail</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&amp;family=Inter:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "on-tertiary-fixed": "#004e47",
+              "surface-dim": "#d1dce0",
+              "surface-container-low": "#f1f4f6",
+              "error-container": "#ff8b9a",
+              "tertiary": "#006b62",
+              "primary-dim": "#535252",
+              "primary-fixed": "#e5e2e1",
+              "on-secondary-fixed": "#2a13c5",
+              "on-error-container": "#782232",
+              "secondary-fixed-dim": "#d2d0ff",
+              "outline": "#737c7f",
+              "tertiary-container": "#91feef",
+              "surface": "#f8f9fa",
+              "on-error": "#fff7f7",
+              "inverse-surface": "#0c0f10",
+              "error": "#9e3f4e",
+              "on-surface-variant": "#586064",
+              "primary-fixed-dim": "#d6d4d3",
+              "on-tertiary-fixed-variant": "#006d64",
+              "secondary": "#4e45e4",
+              "tertiary-dim": "#005e56",
+              "on-primary": "#faf7f6",
+              "background": "#f8f9fa",
+              "primary-container": "#e5e2e1",
+              "inverse-on-surface": "#9b9d9e",
+              "surface-container-lowest": "#ffffff",
+              "surface-variant": "#dbe4e7",
+              "on-tertiary-container": "#006259",
+              "secondary-fixed": "#e2dfff",
+              "secondary-dim": "#4135d8",
+              "outline-variant": "#abb3b7",
+              "surface-bright": "#f8f9fa",
+              "surface-container-highest": "#dbe4e7",
+              "on-background": "#2b3437",
+              "on-secondary-container": "#3f33d6",
+              "on-secondary": "#fbf7ff",
+              "on-primary-container": "#525151",
+              "on-tertiary": "#e2fff9",
+              "surface-container": "#eaeff1",
+              "on-secondary-fixed-variant": "#4a40e0",
+              "on-surface": "#2b3437",
+              "secondary-container": "#e2dfff",
+              "inverse-primary": "#ffffff",
+              "primary": "#5f5e5e",
+              "surface-tint": "#5f5e5e",
+              "surface-container-high": "#e2e9ec",
+              "error-dim": "#4f0116",
+              "tertiary-fixed": "#91feef",
+              "on-primary-fixed-variant": "#5c5b5b",
+              "tertiary-fixed-dim": "#83efe1",
+              "on-primary-fixed": "#403f3f"
+            },
+            fontFamily: {
+              "headline": ["Manrope"],
+              "body": ["Inter"],
+              "label": ["Inter"]
+            },
+            borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        .pulse-glow {
+            box-shadow: 0 0 0 0 rgba(0, 107, 98, 0.4);
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(0, 107, 98, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(0, 107, 98, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(0, 107, 98, 0); }
+        }
+    </style>
+</head>
+<body class="bg-surface font-body text-on-surface antialiased overflow-hidden">
+<!-- Top Navigation (Shared Component) -->
+<nav class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md text-indigo-600 dark:text-indigo-400 font-manrope tracking-tight docked full-width top-0 z-40 shadow-sm dark:shadow-none flex justify-between items-center w-full px-8 h-16 fixed">
+<div class="text-xl font-bold tracking-wider text-slate-900 dark:text-slate-50">Cognitive Canvas</div>
+<div class="hidden md:flex gap-8 items-center">
+<a class="text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-600 font-semibold py-5" href="#">Workspaces</a>
+<a class="text-slate-500 dark:text-slate-400 font-medium hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors px-3 py-1 rounded" href="#">Analytics</a>
+<a class="text-slate-500 dark:text-slate-400 font-medium hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors px-3 py-1 rounded" href="#">Team</a>
+</div>
+<div class="flex items-center gap-4">
+<button class="material-symbols-outlined text-slate-500 hover:bg-slate-100 p-2 rounded-full transition-all">notifications</button>
+<button class="material-symbols-outlined text-slate-500 hover:bg-slate-100 p-2 rounded-full transition-all">settings</button>
+<img class="w-8 h-8 rounded-full border border-outline-variant/20" data-alt="User profile professional headshot" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAgLz66ZwLlTqzlj7bp5doXC2ZqchYUG5njrRkXVSKwD_7Hm1Dp6mOpu3hLKqlTwT2wICSD2XuxP4y1CbjpDfqME3uTZJdIv_wlgA2C920hdYlfZbX-bWbK-G1uLQthv1gbZrv5_Uce-Dp0Uc6MwJ6-rYQhqoM-bYME6Qzx2-1iQKlXs1XUmRZs_dRZcvzx_QZ4kbfGr3nupREWcBkpyXyfFoSOjR0c5CSuhgismmHtkMpnIIr5EoGBP8KX3kd_IGU7bqa4x4uZuyu6"/>
+</div>
+</nav>
+<!-- Side Navigation (Shared Component) -->
+<aside class="bg-slate-50 dark:bg-slate-950 font-inter text-sm antialiased h-screen w-64 fixed left-0 top-0 z-50 flex flex-col h-full p-4 gap-2 no-line bg-slate-100 dark:bg-slate-900 flat no-shadows pt-20">
+<div class="flex items-center gap-3 px-2 mb-6">
+<div class="w-10 h-10 bg-indigo-700 rounded flex items-center justify-center text-white">
+<span class="material-symbols-outlined">category</span>
+</div>
+<div>
+<h2 class="text-lg font-extrabold font-manrope text-indigo-700 dark:text-indigo-300 leading-tight">Project Alpha</h2>
+<p class="text-[10px] text-slate-500 uppercase tracking-widest">Strategic Decisions</p>
+</div>
+</div>
+<div class="flex flex-col gap-1 flex-1">
+<a class="flex items-center gap-3 px-3 py-2 bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-300 font-bold rounded-lg shadow-sm" href="#">
+<span class="material-symbols-outlined" data-icon="folder_open">folder_open</span> All Projects
+            </a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 dark:text-slate-400 hover:text-indigo-500 hover:bg-slate-200/50 transition-all translate-x-1 duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="lightbulb">lightbulb</span> Active Ideas
+            </a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 dark:text-slate-400 hover:text-indigo-500 hover:bg-slate-200/50 transition-all translate-x-1 duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="inventory_2">inventory_2</span> Archive
+            </a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 dark:text-slate-400 hover:text-indigo-500 hover:bg-slate-200/50 transition-all translate-x-1 duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="group">group</span> Collaborators
+            </a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 dark:text-slate-400 hover:text-indigo-500 hover:bg-slate-200/50 transition-all translate-x-1 duration-200" href="#">
+<span class="material-symbols-outlined" data-icon="tune">tune</span> Settings
+            </a>
+</div>
+<button class="mt-4 mb-4 bg-gradient-to-br from-secondary to-secondary-dim text-on-secondary px-4 py-3 rounded-lg font-semibold flex items-center justify-center gap-2 shadow-lg active:opacity-80 transition-all">
+<span class="material-symbols-outlined">add</span> New Project
+        </button>
+<div class="flex flex-col gap-1 border-t border-slate-200 pt-4">
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 dark:text-slate-400 hover:text-indigo-500 transition-all" href="#">
+<span class="material-symbols-outlined" data-icon="help">help</span> Help Center
+            </a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 dark:text-slate-400 hover:text-indigo-500 transition-all" href="#">
+<span class="material-symbols-outlined" data-icon="logout">logout</span> Log Out
+            </a>
+</div>
+</aside>
+<!-- Main Workspace Board (Background) -->
+<main class="ml-64 pt-16 h-screen overflow-hidden bg-surface-container-low">
+<header class="px-12 pt-12 pb-8 flex justify-between items-end">
+<div>
+<span class="text-[10px] font-label font-semibold tracking-widest text-secondary uppercase mb-2 block">WORKSPACE / STRATEGIC VENTURES</span>
+<h1 class="text-4xl font-headline font-extrabold text-on-surface tracking-tight">Market Expansion Board</h1>
+</div>
+<div class="flex gap-4">
+<div class="relative">
+<span class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-outline">search</span>
+<input class="pl-12 pr-6 py-2 bg-surface-container-lowest rounded-full border-none shadow-sm focus:ring-2 focus:ring-secondary/20 w-64 text-sm" placeholder="Search insights..." type="text"/>
+</div>
+</div>
+</header>
+<!-- Kanban Structure -->
+<div class="flex px-12 gap-8 h-[calc(100vh-250px)] overflow-x-auto pb-8">
+<!-- Column 1 -->
+<div class="flex-shrink-0 w-80 flex flex-col gap-4">
+<div class="flex items-center justify-between px-2">
+<h3 class="font-headline font-bold text-on-surface-variant flex items-center gap-2">
+                        Raw Signals <span class="bg-surface-container-highest px-2 py-0.5 rounded text-xs">4</span>
+</h3>
+</div>
+<div class="flex-1 bg-surface-container-low/50 rounded-xl p-2 flex flex-col gap-3">
+<div class="bg-surface-container-lowest p-5 rounded-lg shadow-sm border-l-2 border-tertiary">
+<p class="text-sm font-semibold mb-2">Consumer sentiment dip in APAC</p>
+<div class="flex gap-2">
+<span class="px-2 py-1 bg-secondary-container text-on-secondary-container text-[10px] rounded-md font-bold">ANALYSIS</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Column 2 (Active Ideas) -->
+<div class="flex-shrink-0 w-80 flex flex-col gap-4">
+<div class="flex items-center justify-between px-2">
+<h3 class="font-headline font-bold text-on-surface-variant flex items-center gap-2">
+                        Hypotheses <span class="bg-surface-container-highest px-2 py-0.5 rounded text-xs">2</span>
+</h3>
+</div>
+<div class="flex-1 bg-surface-container-low/50 rounded-xl p-2 flex flex-col gap-3">
+<div class="bg-surface-container-lowest p-5 rounded-lg shadow-sm border-l-2 border-secondary ring-2 ring-secondary/20">
+<p class="text-sm font-bold mb-2">Hypothesis A: Deep Market Analysis</p>
+<p class="text-xs text-on-surface-variant line-clamp-2">Detailed investigation into micro-segments within the emerging tech sector...</p>
+<div class="mt-4 flex items-center justify-between">
+<div class="flex items-center gap-1.5">
+<div class="w-2 h-2 rounded-full bg-tertiary pulse-glow"></div>
+<span class="text-[10px] font-bold text-tertiary uppercase">Active</span>
+</div>
+<div class="flex -space-x-2">
+<img class="w-6 h-6 rounded-full border-2 border-white" data-alt="Team member avatar" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBXvlSa2rdgCuEweRt4ZP2hceDAsVGrGwU6O8IXKSHXuH1KWrB_rXDu_xSfwvBZ-yOvncq_DyQ2evVdMaLXSrPMQsJ9idc8gm9ZYCkmMRXjF2xiQ7UV6QcEnkOlIOoZHhwTd26A6NWbSbAMObxT5tM1IaifKT69s5Tuuqr5RO0pkX9vYZN7EkSRWbVRHJIzq7J2Iw8ffR8qzcshcd6G4xyz7h_Yy6KiiqTeOGmlEcE2hnZrbvcj5uhJcEMwIUmJE-0YDEIeCXhufUz5"/>
+<div class="w-6 h-6 rounded-full bg-surface-container-highest flex items-center justify-center text-[10px] font-bold border-2 border-white">+3</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- Slide-out Drawer Overlay (Backdrop) -->
+<div class="fixed inset-0 bg-on-surface/40 backdrop-blur-sm z-50 flex justify-end">
+<!-- Drawer Container -->
+<div class="w-full max-w-2xl bg-surface h-full shadow-2xl flex flex-col animate-slide-in relative">
+<!-- Close Button (Floating) -->
+<button class="absolute left-[-50px] top-6 w-10 h-10 bg-surface rounded-l-lg flex items-center justify-center text-on-surface hover:text-secondary transition-colors">
+<span class="material-symbols-outlined">close</span>
+</button>
+<!-- Drawer Header -->
+<header class="p-8 pb-4 border-b border-outline-variant/10">
+<div class="flex items-center gap-2 mb-4">
+<span class="material-symbols-outlined text-secondary text-sm">science</span>
+<span class="text-[10px] font-label font-bold tracking-[0.1em] text-outline uppercase">Active Hypothesis</span>
+</div>
+<h2 class="text-3xl font-headline font-extrabold text-on-surface tracking-tight mb-2">Hypothesis A: Deep Market Analysis</h2>
+<div class="flex items-center gap-4 text-xs text-on-surface-variant font-medium">
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-base">calendar_today</span> Created 2 days ago</span>
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-base">person</span> Assigned to Agent Zeta</span>
+</div>
+</header>
+<!-- Scrollable Content -->
+<div class="flex-1 overflow-y-auto p-8 space-y-10">
+<!-- Overview Section -->
+<section>
+<h3 class="text-xs font-label font-bold text-on-surface-variant tracking-widest uppercase mb-4">Detailed Overview</h3>
+<p class="text-on-surface leading-relaxed text-lg font-light">
+                        This hypothesis explores the correlation between early adoption rates in tier-2 cities and the long-term sustainability of decentralized finance tools. We are specifically looking for "friction points" that current market leaders have overlooked.
+                    </p>
+</section>
+<!-- Evidence Section (Bento-ish Grid) -->
+<section>
+<h3 class="text-xs font-label font-bold text-on-surface-variant tracking-widest uppercase mb-4">Evidence</h3>
+<div class="grid grid-cols-2 gap-4">
+<div class="bg-surface-container-low p-5 rounded-xl flex flex-col gap-3">
+<span class="material-symbols-outlined text-tertiary">query_stats</span>
+<p class="text-sm font-medium leading-snug">User acquisition costs in APAC have decreased by 14% month-over-month for similar models.</p>
+</div>
+<div class="bg-surface-container-low p-5 rounded-xl flex flex-col gap-3">
+<span class="material-symbols-outlined text-tertiary">groups</span>
+<p class="text-sm font-medium leading-snug">Local community leads reporting increased organic interest in non-custodial wallets.</p>
+</div>
+<div class="col-span-2 bg-surface-container-low p-5 rounded-xl flex items-start gap-4">
+<span class="material-symbols-outlined text-tertiary mt-1">description</span>
+<div>
+<p class="text-sm font-medium leading-snug">Whitepaper analysis suggests technical barriers are lowering faster than anticipated in regulated zones.</p>
+<button class="text-xs font-bold text-secondary mt-2 flex items-center gap-1 hover:underline">View Source Document <span class="material-symbols-outlined text-xs">open_in_new</span></button>
+</div>
+</div>
+</div>
+</section>
+<!-- Risk Assessment -->
+<section>
+<div class="bg-error-container/10 p-6 rounded-2xl border-l-4 border-error">
+<h3 class="text-xs font-label font-bold text-error tracking-widest uppercase mb-3 flex items-center gap-2">
+<span class="material-symbols-outlined text-sm">warning</span> Risk Assessment
+                        </h3>
+<p class="text-on-surface text-sm leading-relaxed">
+                            Primary risk involves sudden regulatory shifts in the Singaporean corridor. If the SEC-style framework is adopted globally before Q3, this hypothesis loses its "Early Mover" advantage. Probability: <span class="font-bold">22%</span>. Impact: <span class="font-bold">Severe</span>.
+                        </p>
+</div>
+</section>
+<!-- Agent Observations -->
+<section>
+<h3 class="text-xs font-label font-bold text-on-surface-variant tracking-widest uppercase mb-4 flex items-center gap-2">
+<div class="w-1.5 h-1.5 rounded-full bg-tertiary pulse-glow"></div> Agent Observations
+                    </h3>
+<div class="space-y-4">
+<div class="flex gap-4 items-start">
+<div class="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 flex-shrink-0">
+<span class="material-symbols-outlined text-lg">smart_toy</span>
+</div>
+<div class="bg-white/50 backdrop-blur-sm p-4 rounded-xl shadow-sm border border-outline-variant/5">
+<p class="text-sm italic text-on-surface-variant">
+                                    "I have observed a cluster of high-intensity social signals originating from Indonesian developer hubs. This contradicts our initial assumption that interest was purely consumer-driven. Recommend pivoting deep-dive to include 'Developer Experience'."
+                                </p>
+<div class="mt-2 text-[10px] font-bold text-outline">AGENT ZETA • 14:02 UTC</div>
+</div>
+</div>
+</div>
+</section>
+</div>
+<!-- Drawer Actions -->
+<footer class="p-8 bg-white border-t border-outline-variant/10 flex items-center justify-between gap-4">
+<button class="flex-1 px-6 py-4 bg-gradient-to-r from-secondary to-secondary-dim text-on-secondary rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-secondary/20 hover:scale-[1.02] transition-all active:scale-95">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">trending_up</span>
+                    Promote to Survives
+                </button>
+<button class="px-6 py-4 bg-surface-container-high text-on-surface-variant rounded-xl font-bold flex items-center gap-2 hover:bg-surface-variant transition-all active:scale-95">
+<span class="material-symbols-outlined">archive</span>
+                    Archive Idea
+                </button>
+</footer>
+<!-- Decorative Shadow Gradient -->
+<div class="absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-black/5 to-transparent pointer-events-none"></div>
+</div>
+</div>
+</body></html>

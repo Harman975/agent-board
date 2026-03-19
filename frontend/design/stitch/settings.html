@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Settings - Cognitive Canvas</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Manrope:wght@500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "surface-container-high": "#e2e9ec",
+              "on-primary-container": "#525151",
+              "inverse-on-surface": "#9b9d9e",
+              "on-secondary-container": "#3f33d6",
+              "on-primary-fixed": "#403f3f",
+              "primary-container": "#e5e2e1",
+              "outline": "#737c7f",
+              "background": "#f8f9fa",
+              "on-surface": "#2b3437",
+              "tertiary-dim": "#005e56",
+              "surface-container": "#eaeff1",
+              "surface-bright": "#f8f9fa",
+              "tertiary-container": "#91feef",
+              "on-tertiary-container": "#006259",
+              "on-secondary-fixed-variant": "#4a40e0",
+              "surface-tint": "#5f5e5e",
+              "secondary-fixed": "#e2dfff",
+              "on-primary": "#faf7f6",
+              "on-surface-variant": "#586064",
+              "on-secondary": "#fbf7ff",
+              "secondary-container": "#e2dfff",
+              "primary": "#5f5e5e",
+              "primary-fixed-dim": "#d6d4d3",
+              "outline-variant": "#abb3b7",
+              "tertiary": "#006b62",
+              "inverse-surface": "#0c0f10",
+              "primary-fixed": "#e5e2e1",
+              "surface-dim": "#d1dce0",
+              "on-tertiary-fixed": "#004e47",
+              "on-error": "#fff7f7",
+              "surface-container-low": "#f1f4f6",
+              "error": "#9e3f4e",
+              "on-tertiary-fixed-variant": "#006d64",
+              "tertiary-fixed-dim": "#83efe1",
+              "surface-variant": "#dbe4e7",
+              "on-secondary-fixed": "#2a13c5",
+              "inverse-primary": "#ffffff",
+              "on-primary-fixed-variant": "#5c5b5b",
+              "error-dim": "#4f0116",
+              "surface": "#f8f9fa",
+              "surface-container-lowest": "#ffffff",
+              "on-error-container": "#782232",
+              "on-background": "#2b3437",
+              "error-container": "#ff8b9a",
+              "primary-dim": "#535252",
+              "secondary": "#4e45e4",
+              "secondary-fixed-dim": "#d2d0ff",
+              "secondary-dim": "#4135d8",
+              "tertiary-fixed": "#91feef",
+              "surface-container-highest": "#dbe4e7",
+              "on-tertiary": "#e2fff9"
+            },
+            fontFamily: {
+              "headline": ["Manrope"],
+              "body": ["Inter"],
+              "label": ["Inter"]
+            },
+            borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+          },
+        },
+      }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; background-color: #f8f9fa; color: #2b3437; }
+        .headline-font { font-family: 'Manrope', sans-serif; }
+        .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+        .glass-panel { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); }
+        .cta-gradient { background: linear-gradient(135deg, #4e45e4 0%, #4135d8 100%); }
+    </style>
+</head>
+<body class="bg-surface selection:bg-secondary-container selection:text-on-secondary-container">
+<!-- SideNavBar (Authority: JSON) -->
+<aside class="h-screen w-64 fixed left-0 top-0 flex flex-col py-8 px-4 bg-slate-50 dark:bg-slate-900 border-r-0 z-50">
+<div class="mb-10 px-4">
+<h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100 headline-font">Cognitive Canvas</h1>
+<p class="text-xs font-medium text-slate-500 tracking-wide uppercase mt-1">AI Agent Workspace</p>
+</div>
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-3 px-4 py-2.5 rounded-lg transition-colors font-['Manrope'] tracking-wide text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/50" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="folder_open">folder_open</span>
+<span>Projects</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2.5 rounded-lg transition-colors font-['Manrope'] tracking-wide text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/50" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="lightbulb">lightbulb</span>
+<span>Ideas</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2.5 rounded-lg transition-colors font-['Manrope'] tracking-wide text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/50" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="archive">archive</span>
+<span>Archive</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2.5 rounded-lg transition-colors font-['Manrope'] tracking-wide text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/50" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="group">group</span>
+<span>Collaborators</span>
+</a>
+<!-- Active State: Settings (As requested) -->
+<a class="flex items-center gap-3 px-4 py-2.5 rounded-lg font-['Manrope'] tracking-wide text-sm bg-slate-200 dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 font-semibold" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="settings">settings</span>
+<span>Settings</span>
+</a>
+</nav>
+<div class="mt-auto px-4">
+<button class="w-full cta-gradient text-on-secondary py-3 px-4 rounded-md font-semibold text-sm flex items-center justify-center gap-2 active:scale-95 duration-150">
+<span class="material-symbols-outlined text-sm" data-icon="add">add</span>
+<span>New Project</span>
+</button>
+<div class="mt-6 flex items-center gap-3 pt-6 border-t border-slate-200 dark:border-slate-800">
+<img alt="User Profile" class="w-8 h-8 rounded-full bg-slate-200" data-alt="User profile avatar circle" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBaGr9px81QRhBAfaiAE8gWAPLWbeQHDI9rBLaIHY9OKZyl3NM_NgCAyJpgBPky4dIG4SZkvi0pQVZTZ0yuAlh_udkkAWH7ZMGJi4D9K70zbTrnCRPP1ssxKkFKoJH3nGzP24ham5UFKPfxkwYknJMd6258JZyjgIjsObN84fUBd_-WbVzKP_VzU52EZzGI3pG5wHStJUkwsx_VDTNh2tBNXSlvJWxppkYhxiq7vPOLak1G2FRz6B869EO4FxwKW5bvs5vFf24N2NJn"/>
+<div class="overflow-hidden">
+<p class="text-xs font-bold text-on-surface truncate">Alex Chen</p>
+<p class="text-[10px] text-on-surface-variant truncate">Premium Plan</p>
+</div>
+</div>
+</div>
+</aside>
+<!-- TopNavBar (Authority: JSON) -->
+<header class="fixed top-0 right-0 left-64 h-16 z-40 bg-white/80 dark:bg-slate-950/80 backdrop-blur-md flex items-center justify-between px-12">
+<div class="flex items-center gap-8">
+<span class="font-['Inter'] text-sm font-semibold uppercase tracking-widest text-slate-500">Overview</span>
+<span class="font-['Inter'] text-sm font-semibold uppercase tracking-widest text-slate-500">Analysis</span>
+<span class="font-['Inter'] text-sm font-semibold uppercase tracking-widest text-slate-500">Timeline</span>
+</div>
+<div class="flex items-center gap-6">
+<div class="relative">
+<input class="bg-surface-container-low border-none rounded-full py-1.5 pl-10 pr-4 text-xs w-64 focus:ring-2 focus:ring-secondary/20 transition-all outline-none" placeholder="Search workspace..." type="text"/>
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-sm text-outline" data-icon="search">search</span>
+</div>
+<div class="flex items-center gap-4">
+<button class="text-slate-500 hover:text-indigo-500 transition-colors">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+</button>
+<button class="text-slate-500 hover:text-indigo-500 transition-colors">
+<span class="material-symbols-outlined" data-icon="help_outline">help_outline</span>
+</button>
+</div>
+</div>
+</header>
+<!-- Main Content: Settings Canvas -->
+<main class="ml-64 pt-24 pb-20 px-12 min-h-screen">
+<div class="max-w-5xl mx-auto">
+<!-- Header Section -->
+<div class="mb-12">
+<h2 class="text-4xl font-extrabold headline-font tracking-tight text-on-surface mb-2">Workspace Settings</h2>
+<p class="text-on-surface-variant max-w-2xl">Configure your cognitive environment, manage agent permissions, and orchestrate team collaboration from a single control plane.</p>
+</div>
+<div class="grid grid-cols-12 gap-12 items-start">
+<!-- Settings Navigation (Local) -->
+<div class="col-span-3 sticky top-32">
+<ul class="space-y-4">
+<li>
+<a class="flex items-center gap-3 text-secondary font-semibold headline-font text-sm" href="#brand">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+                                Brand Identity
+                            </a>
+</li>
+<li>
+<a class="flex items-center gap-3 text-on-surface-variant hover:text-on-surface transition-colors font-medium headline-font text-sm" href="#api">
+<span class="w-1.5 h-1.5 rounded-full bg-transparent"></span>
+                                AI Engine &amp; API Keys
+                            </a>
+</li>
+<li>
+<a class="flex items-center gap-3 text-on-surface-variant hover:text-on-surface transition-colors font-medium headline-font text-sm" href="#members">
+<span class="w-1.5 h-1.5 rounded-full bg-transparent"></span>
+                                Member Management
+                            </a>
+</li>
+<li>
+<a class="flex items-center gap-3 text-on-surface-variant hover:text-on-surface transition-colors font-medium headline-font text-sm" href="#notifications">
+<span class="w-1.5 h-1.5 rounded-full bg-transparent"></span>
+                                Notification Prefs
+                            </a>
+</li>
+</ul>
+</div>
+<!-- Settings Forms -->
+<div class="col-span-9 space-y-20">
+<!-- Brand Settings Section -->
+<section id="brand">
+<div class="flex items-center gap-4 mb-8">
+<span class="text-xs font-bold uppercase tracking-widest text-on-surface-variant font-label">Section 01</span>
+<div class="h-[1px] flex-1 bg-surface-container-high"></div>
+</div>
+<h3 class="text-2xl font-bold headline-font mb-6">Brand Settings</h3>
+<div class="bg-surface-container-lowest p-8 rounded-xl space-y-8 border-none ring-1 ring-outline-variant/15">
+<div class="flex items-start gap-10">
+<div class="w-32 h-32 bg-surface-container-low rounded-xl flex flex-col items-center justify-center border-2 border-dashed border-outline-variant/30 hover:border-secondary/50 transition-colors cursor-pointer">
+<span class="material-symbols-outlined text-outline mb-2" data-icon="add_a_photo">add_a_photo</span>
+<span class="text-[10px] font-bold text-outline-variant uppercase">Upload Logo</span>
+</div>
+<div class="flex-1 space-y-6">
+<div class="grid grid-cols-2 gap-6">
+<div class="space-y-2">
+<label class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Workspace Name</label>
+<input class="w-full bg-surface-container-low border-none rounded-lg p-3 text-sm focus:ring-2 focus:ring-secondary/20 outline-none" type="text" value="Cognitive Canvas Alpha"/>
+</div>
+<div class="space-y-2">
+<label class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Unique Identifier (URL)</label>
+<div class="flex items-center bg-surface-container-low rounded-lg overflow-hidden">
+<span class="px-3 text-xs text-outline font-medium">app.canvas/</span>
+<input class="flex-1 bg-transparent border-none p-3 text-sm focus:ring-0 outline-none" type="text" value="cc-alpha"/>
+</div>
+</div>
+</div>
+<div class="space-y-2">
+<label class="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Workspace Description</label>
+<textarea class="w-full bg-surface-container-low border-none rounded-lg p-3 text-sm focus:ring-2 focus:ring-secondary/20 outline-none" rows="3">Centralized node for AI agent orchestration and generative workflow management.</textarea>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- AI Agents & API Keys Section -->
+<section id="api">
+<div class="flex items-center gap-4 mb-8">
+<span class="text-xs font-bold uppercase tracking-widest text-on-surface-variant font-label">Section 02</span>
+<div class="h-[1px] flex-1 bg-surface-container-high"></div>
+</div>
+<div class="flex justify-between items-end mb-6">
+<div>
+<h3 class="text-2xl font-bold headline-font">AI Engines &amp; API Keys</h3>
+<p class="text-sm text-on-surface-variant mt-1">Connect your workspace to LLM providers.</p>
+</div>
+<button class="text-xs font-bold text-secondary flex items-center gap-1 hover:underline">
+<span class="material-symbols-outlined text-sm" data-icon="add_circle">add_circle</span>
+                                Add Provider
+                            </button>
+</div>
+<div class="grid grid-cols-1 gap-4">
+<!-- Provider Card -->
+<div class="bg-surface-container-lowest p-6 rounded-xl flex items-center justify-between ring-1 ring-outline-variant/15 group hover:ring-secondary/30 transition-all">
+<div class="flex items-center gap-5">
+<div class="w-12 h-12 bg-on-surface rounded-lg flex items-center justify-center text-surface text-xl font-bold">O</div>
+<div>
+<h4 class="font-bold text-on-surface">OpenAI API</h4>
+<div class="flex items-center gap-2 mt-1">
+<span class="w-2 h-2 rounded-full bg-tertiary"></span>
+<span class="text-[10px] font-bold uppercase text-tertiary">Active • gpt-4o-latest</span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<div class="bg-surface-container-low px-4 py-2 rounded-lg font-mono text-xs text-outline-variant">
+                                        sk-••••••••••••••••L9j1
+                                    </div>
+<button class="p-2 hover:bg-surface-container-high rounded-full transition-colors text-on-surface-variant">
+<span class="material-symbols-outlined text-lg" data-icon="edit">edit</span>
+</button>
+</div>
+</div>
+<!-- Provider Card 2 -->
+<div class="bg-surface-container-lowest p-6 rounded-xl flex items-center justify-between ring-1 ring-outline-variant/15 group hover:ring-secondary/30 transition-all">
+<div class="flex items-center gap-5">
+<div class="w-12 h-12 bg-secondary rounded-lg flex items-center justify-center text-surface text-xl font-bold">A</div>
+<div>
+<h4 class="font-bold text-on-surface">Anthropic Claude</h4>
+<div class="flex items-center gap-2 mt-1">
+<span class="w-2 h-2 rounded-full bg-outline-variant"></span>
+<span class="text-[10px] font-bold uppercase text-outline-variant">Disconnected</span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<button class="bg-secondary text-on-secondary px-6 py-2 rounded-lg text-xs font-bold">Configure</button>
+</div>
+</div>
+</div>
+</section>
+<!-- Member Management Section -->
+<section id="members">
+<div class="flex items-center gap-4 mb-8">
+<span class="text-xs font-bold uppercase tracking-widest text-on-surface-variant font-label">Section 03</span>
+<div class="h-[1px] flex-1 bg-surface-container-high"></div>
+</div>
+<h3 class="text-2xl font-bold headline-font mb-6">Member Management</h3>
+<div class="bg-surface-container-lowest rounded-xl overflow-hidden ring-1 ring-outline-variant/15">
+<table class="w-full text-left border-collapse">
+<thead class="bg-surface-container-low">
+<tr>
+<th class="px-6 py-4 text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Member</th>
+<th class="px-6 py-4 text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Role</th>
+<th class="px-6 py-4 text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Access</th>
+<th class="px-6 py-4 text-[10px] font-bold uppercase tracking-wider text-on-surface-variant text-right">Actions</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-surface-container-high">
+<tr>
+<td class="px-6 py-5">
+<div class="flex items-center gap-3">
+<img alt="Alex Chen" class="w-8 h-8 rounded-full border border-outline-variant/20" data-alt="Avatar of Alex Chen" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDdYCJAvQTuUFFAgfbYn7ft6k1Ux3onXCFdBclWZFe8QDoCEb_xpID21RB3gjoQAbhs7bj6fOPOmilKF5B6CEIi3yetC4Pfu1g1gz6x7a179ziW39BpXjpjNPLgtcBZZym68CNS_f2tximffguTgoGpU2xzYumX-C_yAYgO6fLDfPpaS7spVJQJFWkdAO_uqQM-1_AsaCA7pUxq1YjMZegmWtySV_9RrDTHu9yQ9TgJA-QmaAF5noCbWxFwHW2mwU1u65vTx09PxDdq"/>
+<div>
+<div class="text-sm font-bold text-on-surface">Alex Chen (You)</div>
+<div class="text-xs text-on-surface-variant">alex@cognitive.io</div>
+</div>
+</div>
+</td>
+<td class="px-6 py-5">
+<span class="bg-secondary-container text-on-secondary-container text-[10px] font-bold px-2.5 py-1 rounded-md">ADMIN</span>
+</td>
+<td class="px-6 py-5 text-sm text-on-surface-variant">Full Control</td>
+<td class="px-6 py-5 text-right">
+<span class="material-symbols-outlined text-outline-variant cursor-not-allowed" data-icon="lock">lock</span>
+</td>
+</tr>
+<tr>
+<td class="px-6 py-5">
+<div class="flex items-center gap-3">
+<img alt="Sarah Kim" class="w-8 h-8 rounded-full border border-outline-variant/20" data-alt="Avatar of Sarah Kim" src="https://lh3.googleusercontent.com/aida-public/AB6AXuARuuOFgTtKbSHaV4dbg964plWy3Nj_Dba1wkBJCFMr4rEknpH94BSaawmeeGWJbyKBbZawRGbpu5NwK177gfqKNC2HZXASaCQhLeoRBJ5c6BxE3NwUF6T8kmPuM7AREVzV50sHgKbJDskn7UpBNxy8CXFsEHD10z9lFG65Ni1uV-92cfuIrDsfzO6v0QBvfmH0O-z8yDXFiIq0_QRQ4_5PXDuZRYzb613KlsdznxMbk6z8gkY7Sup_DkNv6BpPWxUFxyP3rT2LQ0zQ"/>
+<div>
+<div class="text-sm font-bold text-on-surface">Sarah Kim</div>
+<div class="text-xs text-on-surface-variant">sarah.k@cognitive.io</div>
+</div>
+</div>
+</td>
+<td class="px-6 py-5">
+<span class="bg-surface-container-high text-on-surface text-[10px] font-bold px-2.5 py-1 rounded-md">CONTRIBUTOR</span>
+</td>
+<td class="px-6 py-5 text-sm text-on-surface-variant">Workspace Access</td>
+<td class="px-6 py-5 text-right">
+<button class="text-on-surface-variant hover:text-error transition-colors">
+<span class="material-symbols-outlined text-lg" data-icon="more_vert">more_vert</span>
+</button>
+</td>
+</tr>
+</tbody>
+</table>
+<div class="p-4 bg-surface-container-lowest border-t border-surface-container-high">
+<button class="w-full flex items-center justify-center gap-2 py-3 rounded-lg border-2 border-dashed border-outline-variant/20 hover:border-secondary/40 hover:bg-surface-container-low transition-all text-sm font-bold text-on-surface-variant hover:text-secondary">
+<span class="material-symbols-outlined text-lg" data-icon="person_add">person_add</span>
+                                    Invite New Member
+                                </button>
+</div>
+</div>
+</section>
+<!-- Notification Preferences -->
+<section id="notifications">
+<div class="flex items-center gap-4 mb-8">
+<span class="text-xs font-bold uppercase tracking-widest text-on-surface-variant font-label">Section 04</span>
+<div class="h-[1px] flex-1 bg-surface-container-high"></div>
+</div>
+<h3 class="text-2xl font-bold headline-font mb-6">Notification Preferences</h3>
+<div class="bg-surface-container-lowest p-8 rounded-xl ring-1 ring-outline-variant/15 space-y-6">
+<div class="flex items-center justify-between py-2">
+<div class="space-y-1">
+<h5 class="text-sm font-bold text-on-surface">Agent Status Alerts</h5>
+<p class="text-xs text-on-surface-variant">Get notified when an AI agent completes a heavy task.</p>
+</div>
+<div class="w-12 h-6 bg-secondary rounded-full relative cursor-pointer">
+<div class="absolute right-1 top-1 w-4 h-4 bg-white rounded-full"></div>
+</div>
+</div>
+<div class="h-[1px] bg-surface-container-high w-full"></div>
+<div class="flex items-center justify-between py-2">
+<div class="space-y-1">
+<h5 class="text-sm font-bold text-on-surface">Project Milestones</h5>
+<p class="text-xs text-on-surface-variant">Receive weekly digests of all project progress.</p>
+</div>
+<div class="w-12 h-6 bg-surface-container-high rounded-full relative cursor-pointer">
+<div class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full"></div>
+</div>
+</div>
+<div class="h-[1px] bg-surface-container-high w-full"></div>
+<div class="flex items-center justify-between py-2">
+<div class="space-y-1">
+<h5 class="text-sm font-bold text-on-surface">Email Security Alerts</h5>
+<p class="text-xs text-on-surface-variant">Critical notifications regarding API usage and logins.</p>
+</div>
+<div class="w-12 h-6 bg-secondary rounded-full relative cursor-pointer">
+<div class="absolute right-1 top-1 w-4 h-4 bg-white rounded-full"></div>
+</div>
+</div>
+</div>
+</section>
+</div>
+</div>
+<!-- Global Footer Save Actions (Floating) -->
+<div class="fixed bottom-8 right-12 glass-panel p-4 rounded-full ring-1 ring-on-surface-variant/10 shadow-xl flex items-center gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+<span class="text-xs font-bold text-on-surface-variant px-4">You have unsaved changes</span>
+<button class="px-6 py-2 bg-surface-container-high rounded-full text-xs font-bold text-on-surface hover:bg-surface-container-highest transition-colors">Discard</button>
+<button class="px-8 py-2 cta-gradient text-white rounded-full text-xs font-bold shadow-lg shadow-secondary/20">Save Workspace Changes</button>
+</div>
+</div>
+</main>
+</body></html>

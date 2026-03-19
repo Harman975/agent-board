@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { ProjectSummary, SprintState, WSEvent, applyWSEvent, TabId } from './types';
 import { WSClient } from './ws';
 import { ActionBar } from './components/ActionBar';
-import { TabBar } from './components/TabBar';
 import { FeedPanel } from './components/FeedPanel';
 import { LogsPanel } from './components/LogsPanel';
 import { SprintLauncher } from './components/SprintLauncher';
@@ -162,6 +161,11 @@ export const App: React.FC = () => {
         sprint={sprint}
         projectName={selectedProject?.name ?? null}
         connected={connected}
+        activeTab={activeTab}
+        onTabChange={(tab) => {
+          setShowLauncher(false);
+          setActiveTab(tab);
+        }}
         onToggleChat={() => setChatOpen((value) => !value)}
         chatOpen={chatOpen}
         onToggleAdvanced={() => setAdvancedMode((value) => !value)}
@@ -190,14 +194,6 @@ export const App: React.FC = () => {
           advancedMode={advancedMode}
         />
         <div className="main-content">
-          <TabBar
-            activeTab={activeTab}
-            onTabChange={(tab) => {
-              setShowLauncher(false);
-              setActiveTab(tab);
-            }}
-            advancedMode={advancedMode}
-          />
           <main>
             {renderPanel()}
           </main>
