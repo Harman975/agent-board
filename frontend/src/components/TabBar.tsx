@@ -4,19 +4,23 @@ import { TabId } from '../types';
 interface TabBarProps {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
+  advancedMode: boolean;
 }
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: 'kanban', label: 'Kanban' },
-  { id: 'feed', label: 'Feed' },
+const PRIMARY_TABS: { id: TabId; label: string }[] = [
+  { id: 'board', label: 'Board' },
+  { id: 'timeline', label: 'Timeline' },
+];
+
+const TECHNICAL_TABS: { id: TabId; label: string }[] = [
   { id: 'logs', label: 'Logs' },
   { id: 'architecture', label: 'Architecture' },
 ];
 
-export const TabBar: React.FC<TabBarProps> = ({ activeTab, onTabChange }) => {
+export const TabBar: React.FC<TabBarProps> = ({ activeTab, onTabChange, advancedMode }) => {
   return (
     <nav className="tab-bar" role="tablist" aria-label="Main navigation">
-      {TABS.map((tab) => (
+      {PRIMARY_TABS.map((tab) => (
         <button
           key={tab.id}
           role="tab"
@@ -27,6 +31,22 @@ export const TabBar: React.FC<TabBarProps> = ({ activeTab, onTabChange }) => {
           {tab.label}
         </button>
       ))}
+      {advancedMode && (
+        <>
+          <span className="tab-divider" aria-hidden="true" />
+          {TECHNICAL_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              className={`tab-button tab-button-technical ${activeTab === tab.id ? 'active' : ''}`}
+              onClick={() => onTabChange(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </>
+      )}
     </nav>
   );
 };

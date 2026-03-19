@@ -44,9 +44,9 @@ async function isServerRunning(rc: BoardRC): Promise<boolean> {
 function startServerBackground(rc: BoardRC, projectDir: string): number {
   const logPath = path.join(projectDir, ".board-server.log");
   const logFd = fs.openSync(logPath, "a");
-  const cliPath = path.join(import.meta.dirname, "cli.js");
+  const { command, args } = resolveServerLaunch();
 
-  const child = nodeSpawn(process.execPath, [cliPath, "serve"], {
+  const child = nodeSpawn(command, args, {
     cwd: projectDir,
     stdio: ["ignore", logFd, logFd],
     detached: true,
@@ -58,6 +58,32 @@ function startServerBackground(rc: BoardRC, projectDir: string): number {
   rc.serverPid = child.pid!;
   writeBoardRC(rc, projectDir);
   return child.pid!;
+}
+
+export function resolveServerLaunch(moduleDir = import.meta.dirname): {
+  command: string;
+  args: string[];
+} {
+  const builtCliPath = path.join(moduleDir, "cli.js");
+  if (fs.existsSync(builtCliPath)) {
+    return {
+      command: process.execPath,
+      args: [builtCliPath, "serve"],
+    };
+  }
+
+  const sourceCliPath = path.join(moduleDir, "cli.ts");
+  if (fs.existsSync(sourceCliPath)) {
+    return {
+      command: process.execPath,
+      args: ["--import", "tsx", sourceCliPath, "serve"],
+    };
+  }
+
+  return {
+    command: process.execPath,
+    args: [builtCliPath, "serve"],
+  };
 }
 
 /**

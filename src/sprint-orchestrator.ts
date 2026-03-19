@@ -652,6 +652,7 @@ export async function startSprint(opts: {
   name: string;
   goal: string;
   specs: AgentSpec[];
+  teamName?: string | null;
   projectDir: string;
   serverUrl: string;
   db: Database.Database;
@@ -672,8 +673,17 @@ export async function startSprint(opts: {
     throw new Error(`Sprint "${opts.name}" already exists. Choose a different name.`);
   }
 
+  if (opts.teamName) {
+    const teamExists = opts.db.prepare("SELECT name FROM teams WHERE name = ?").get(opts.teamName);
+    if (!teamExists) {
+      throw new Error(`Team "${opts.teamName}" does not exist.`);
+    }
+  }
+
   // Create sprint record
-  opts.db.prepare("INSERT INTO sprints (name, goal) VALUES (?, ?)").run(opts.name, opts.goal);
+  opts.db
+    .prepare("INSERT INTO sprints (name, goal, team_name) VALUES (?, ?, ?)")
+    .run(opts.name, opts.goal, opts.teamName ?? null);
 
   // Spawn agents atomically
   const spawned: string[] = [];

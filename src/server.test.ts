@@ -986,6 +986,48 @@ describe("GET /data/sprint/latest", () => {
     const data = await res.json();
     assert.equal(data, null);
   });
+
+  it("filters the latest sprint by team", async () => {
+    db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run(
+      "alpha", "Alpha mission", "@admin"
+    );
+    db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run(
+      "beta", "Beta mission", "@admin"
+    );
+    db.prepare("INSERT INTO sprints (name, goal, team_name) VALUES (?, ?, ?)").run(
+      "alpha-sprint", "Alpha goal", "alpha"
+    );
+    db.prepare("INSERT INTO sprints (name, goal, team_name) VALUES (?, ?, ?)").run(
+      "beta-sprint", "Beta goal", "beta"
+    );
+
+    const res = await app.request("/data/sprint/latest?team=beta");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.name, "beta-sprint");
+    assert.equal(data.teamName, "beta");
+  });
+});
+
+describe("GET /data/projects", () => {
+  it("returns project summaries with the latest sprint info", async () => {
+    db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run(
+      "alpha", "Alpha mission", "@admin"
+    );
+    db.prepare("INSERT INTO sprints (name, goal, team_name) VALUES (?, ?, ?)").run(
+      "alpha-sprint", "Explore alpha ideas", "alpha"
+    );
+
+    const res = await app.request("/data/projects");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.ok(Array.isArray(data));
+    const alpha = data.find((project: any) => project.id === "alpha");
+    assert.ok(alpha);
+    assert.equal(alpha.name, "alpha");
+    assert.equal(alpha.activeSprintName, "alpha-sprint");
+    assert.equal(alpha.activeSprintGoal, "Explore alpha ideas");
+  });
 });
 
 describe("GET /data/sprint/:name", () => {
@@ -1305,6 +1347,17 @@ describe("POST /data/sprint/start", () => {
       body: { goal: "test", name: "taken", tasks: [{ handle: "@x", mission: "test" }] },
     });
     assert.equal(res.status, 409);
+  });
+
+  it("returns 400 when the selected team does not exist", async () => {
+    const res = await req("POST", "/data/sprint/start", {
+      body: {
+        goal: "test",
+        teamName: "missing-team",
+        tasks: [{ handle: "@x", mission: "test" }],
+      },
+    });
+    assert.equal(res.status, 400);
   });
 
   // Note: testing actual agent spawning requires a full environment,

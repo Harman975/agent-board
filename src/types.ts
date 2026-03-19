@@ -146,6 +146,7 @@ export interface SprintBranch {
 export interface Sprint {
   name: string;
   goal: string;
+  team_name: string | null;
   status: "running" | "compressing" | "ready" | "finished" | "failed";
   created_at: string;
   finished_at: string | null;

@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS routes (
 CREATE TABLE IF NOT EXISTS sprints (
   name TEXT PRIMARY KEY,
   goal TEXT NOT NULL,
+  team_name TEXT REFERENCES teams(name),
   status TEXT NOT NULL DEFAULT 'running'
     CHECK(status IN ('running', 'compressing', 'ready', 'finished', 'failed')),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
@@ -155,6 +156,7 @@ CREATE TABLE IF NOT EXISTS sprint_compressions (
 CREATE INDEX IF NOT EXISTS idx_sprint_agents_sprint ON sprint_agents(sprint_name);
 CREATE INDEX IF NOT EXISTS idx_sprint_agents_agent ON sprint_agents(agent_handle);
 CREATE INDEX IF NOT EXISTS idx_sprint_compressions_status ON sprint_compressions(status);
+CREATE INDEX IF NOT EXISTS idx_sprints_team ON sprints(team_name);
 CREATE INDEX IF NOT EXISTS idx_teams_manager ON teams(manager);
 CREATE INDEX IF NOT EXISTS idx_team_members_agent ON team_members(agent_handle);
 CREATE INDEX IF NOT EXISTS idx_routes_team ON routes(team_name);
@@ -225,6 +227,13 @@ CREATE TABLE IF NOT EXISTS sprint_compressions (
   finished_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sprint_compressions_status ON sprint_compressions(status);
+`,
+  },
+  {
+    version: 7,
+    sql: `
+ALTER TABLE sprints ADD COLUMN team_name TEXT;
+CREATE INDEX IF NOT EXISTS idx_sprints_team ON sprints(team_name);
 `,
   },
 ];

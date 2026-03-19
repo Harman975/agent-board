@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { LandingBriefAgent, LandingBriefData } from '../types';
+import React, { useEffect, useState } from 'react';
+import { LandingBriefData } from '../types';
+import { buildDecisionBriefModel } from '../presentation';
 
 interface LandingBriefProps {
   sprintName: string;
@@ -28,86 +29,93 @@ export const LandingBrief: React.FC<LandingBriefProps> = ({ sprintName, onClose 
     return () => { cancelled = true; };
   }, [sprintName]);
 
-  const statusIcon = (status: string) => {
-    switch (status) {
-      case 'passed': return '\u2705';
-      case 'crashed': return '\u274C';
-      case 'running': return '\u23F3';
-      default: return '\u2753';
-    }
-  };
-
-  const groupedAgents = useCallback((agents: LandingBriefAgent[]) => {
-    const groups = new Map<string, LandingBriefAgent[]>();
-    for (const agent of agents) {
-      const key = agent.approachGroup ?? `solo:${agent.handle}`;
-      const bucket = groups.get(key) ?? [];
-      bucket.push(agent);
-      groups.set(key, bucket);
-    }
-    return Array.from(groups.values());
-  }, []);
-
   if (loading) {
-    return <div className="landing-brief"><p>Loading brief...</p></div>;
+    return <div className="landing-brief"><p>Loading decision brief...</p></div>;
   }
 
   if (!brief) {
-    return <div className="landing-brief"><p>Unable to load brief.</p></div>;
+    return <div className="landing-brief"><p>Unable to load the decision brief.</p></div>;
   }
+
+  const decision = buildDecisionBriefModel(brief);
+  const passedCount = decision.options.filter((option) => option.tone === 'passed').length;
+  const runningCount = decision.options.filter((option) => option.tone === 'running').length;
+  const crashedCount = decision.options.filter((option) => option.tone === 'crashed').length;
 
   return (
     <div className="landing-brief">
       <div className="brief-header">
-        <h2>Landing Brief: {brief.sprint.name}</h2>
+        <div>
+          <p className="section-kicker">Decision Brief</p>
+          <h2>{brief.sprint.goal}</h2>
+        </div>
         <button className="btn-secondary" onClick={onClose}>Close</button>
       </div>
 
-      <div className="brief-actions">
-        <p>
-          {brief.summary.passed} passed, {brief.summary.crashed} crashed, {brief.summary.running} running.
-          {brief.compression && (
-            <> Synthesis: {brief.compression.status} ({Math.round(brief.compression.ratio * 100)}% reduction).</>
-          )}
-        </p>
+      <div className="decision-callout">
+        <h3>{decision.headline}</h3>
+        <p>{decision.recommendation}</p>
+        {decision.compressionNote && <p className="decision-support">{decision.compressionNote}</p>}
       </div>
 
-      {groupedAgents(brief.agents).map((group) => (
-        <div key={group[0].approachGroup ?? group[0].handle} className="brief-group">
-          {group[0].approachGroup && (
-            <h3>
-              {group[0].track ? `${group[0].track}: ` : ''}
-              {group[0].approachGroup}
-            </h3>
-          )}
-          <table className="brief-table">
-            <thead>
-              <tr>
-                <th>Status</th>
-                <th>Agent</th>
-                <th>Approach</th>
-                <th>Branch</th>
-                <th>Tests</th>
-                <th>Commits</th>
-                <th>DAG</th>
-              </tr>
-            </thead>
-            <tbody>
-              {group.map((agent) => (
-                <tr key={agent.handle} className={`brief-row brief-${agent.status}`}>
-                  <td>{statusIcon(agent.status)}</td>
-                  <td className="mono">{agent.handle}</td>
-                  <td>{agent.approachLabel ?? agent.mission ?? '-'}</td>
-                  <td className="mono">{agent.branch ?? '-'}</td>
-                  <td>{agent.testCount ?? '-'}</td>
-                  <td>{agent.commitCount}</td>
-                  <td>{agent.lastDagPushMessage ?? '-'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ))}
+      <div className="decision-stat-row">
+        <article className="overview-stat">
+          <p className="overview-stat-label">Likely survivors</p>
+          <p className="overview-stat-value">{passedCount}</p>
+          <p className="overview-stat-note">Routes that currently hold up.</p>
+        </article>
+        <article className="overview-stat">
+          <p className="overview-stat-label">Still open</p>
+          <p className="overview-stat-value">{runningCount}</p>
+          <p className="overview-stat-note">Routes that still need more learning.</p>
+        </article>
+        <article className="overview-stat">
+          <p className="overview-stat-label">Not stable yet</p>
+          <p className="overview-stat-value">{crashedCount}</p>
+          <p className="overview-stat-note">Routes that should not survive as they are.</p>
+        </article>
+      </div>
+
+      <div className="decision-grid">
+        {decision.options.map((option) => (
+          <article key={option.id} className={`decision-card tone-${option.tone}`}>
+            <div className="decision-card-header">
+              <div>
+                <p className="decision-card-title">{option.title}</p>
+                <p className="decision-card-verdict">{option.verdict}</p>
+              </div>
+              <span className={`status-badge tone-${option.tone}`}>{option.status}</span>
+            </div>
+            <p className="decision-card-body">{option.whyItMatters}</p>
+            <div className="signal-grid decision-signal-grid">
+              {option.whatItReuses && (
+                <article className="signal-tile">
+                  <p className="signal-label">What it reuses</p>
+                  <p className="signal-text">{option.whatItReuses}</p>
+                </article>
+              )}
+              {option.existingCodeGap && (
+                <article className="signal-tile">
+                  <p className="signal-label">Why the current code was not enough</p>
+                  <p className="signal-text">{option.existingCodeGap}</p>
+                </article>
+              )}
+              {option.evidence && (
+                <article className="signal-tile">
+                  <p className="signal-label">Evidence</p>
+                  <p className="signal-text">{option.evidence}</p>
+                </article>
+              )}
+              {option.concern && (
+                <article className="signal-tile">
+                  <p className="signal-label">Watchout</p>
+                  <p className="signal-text">{option.concern}</p>
+                </article>
+              )}
+            </div>
+          </article>
+        ))}
+      </div>
     </div>
   );
 };

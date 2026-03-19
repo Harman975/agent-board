@@ -33,7 +33,7 @@ export const LogsPanel: React.FC<LogsPanelProps> = ({ agents }) => {
     // Fetch existing logs
     (async () => {
       try {
-        const res = await fetch(`/api/logs/${encodeURIComponent(selectedHandle)}?lines=50`);
+        const res = await fetch(`/data/logs/${encodeURIComponent(selectedHandle)}?lines=50`);
         if (res.ok) {
           const data = await res.json();
           if (!cancelled) {

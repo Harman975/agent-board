@@ -24,9 +24,21 @@ export interface AgentTile {
 export interface SprintState {
   name: string;
   goal: string;
+  teamName?: string | null;
   status?: string;
   agents: AgentTile[];
   createdAt: string;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  mission: string;
+  statusLabel: string;
+  needsInputCount: number;
+  ideaCount: number;
+  activeSprintName: string | null;
+  activeSprintGoal: string | null;
 }
 
 export interface FeedPost {
@@ -43,6 +55,9 @@ export interface SprintTask {
   handle: string;
   mission: string;
   scope: string;
+  track?: string | null;
+  approachGroup?: string | null;
+  approachLabel?: string | null;
 }
 
 export interface SprintSuggestion {
@@ -66,6 +81,18 @@ export interface LandingBriefAgent {
   testCount: number | null;
   commitCount: number;
   lastDagPushMessage: string | null;
+  report?: {
+    summary: string;
+    hypothesis: string | null;
+    reused: string | null;
+    whyNotExistingCode: string | null;
+    whySurvives: string | null;
+    newFiles: string | null;
+    architecture: string | null;
+    dataFlow: string | null;
+    edgeCases: string | null;
+    tests: string | null;
+  } | null;
 }
 
 export interface LandingBriefData {
@@ -104,7 +131,11 @@ export interface WSEvent {
   data: Record<string, unknown>;
 }
 
-export type TabId = 'kanban' | 'feed' | 'logs' | 'architecture';
+export type TabId =
+  | 'board'
+  | 'timeline'
+  | 'logs'
+  | 'architecture';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';

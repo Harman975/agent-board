@@ -40,6 +40,7 @@ export interface ChatDeps {
 export function createApp(db: Database.Database, projectDir?: string, emitter?: BoardEventEmitter, chatDeps?: ChatDeps): Hono<{ Variables: Variables }> {
   const app = new Hono<{ Variables: Variables }>();
   const resolvedProjectDir = projectDir ?? process.cwd();
+  const GENERAL_PROJECT_ID = "__general__";
 
   // === Dashboard (no auth — local only) ===
 
@@ -633,6 +634,7 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
     return {
       name: sprint.name,
       goal: sprint.goal,
+      teamName: sprint.team_name ?? null,
       createdAt: sprint.created_at,
       status: sprint.status,
       sprint,
@@ -641,12 +643,117 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
     };
   }
 
-  // === Sprint data (kanban frontend) ===
-
-  app.get("/data/sprint/latest", (c) => {
-    const row = db.prepare(
+  function getLatestActiveSprint(teamName?: string | null): Sprint | undefined {
+    if (teamName === GENERAL_PROJECT_ID) {
+      return db.prepare(
+        "SELECT * FROM sprints WHERE status IN ('running', 'compressing', 'ready') AND team_name IS NULL ORDER BY created_at DESC LIMIT 1"
+      ).get() as Sprint | undefined;
+    }
+    if (teamName) {
+      return db.prepare(
+        "SELECT * FROM sprints WHERE status IN ('running', 'compressing', 'ready') AND team_name = ? ORDER BY created_at DESC LIMIT 1"
+      ).get(teamName) as Sprint | undefined;
+    }
+    return db.prepare(
       "SELECT * FROM sprints WHERE status IN ('running', 'compressing', 'ready') ORDER BY created_at DESC LIMIT 1"
     ).get() as Sprint | undefined;
+  }
+
+  function summarizeSprintIdeas(state: ReturnType<typeof buildSprintState>) {
+    if (!state) {
+      return { ideaCount: 0, needsInputCount: 0, readyCount: 0 };
+    }
+
+    const bucketPriority: Record<string, number> = {
+      blocked: 0,
+      review: 1,
+      in_progress: 2,
+      planning: 3,
+      done: 4,
+    };
+
+    const grouped = new Map<string, string>();
+    for (const agent of state.agents) {
+      const key = agent.approachGroup ?? agent.approachLabel ?? agent.track ?? agent.handle;
+      const current = grouped.get(key);
+      if (!current || bucketPriority[agent.bucket] < bucketPriority[current]) {
+        grouped.set(key, agent.bucket);
+      }
+    }
+
+    const buckets = [...grouped.values()];
+    const needsInputCount = buckets.filter((bucket) => bucket === "blocked").length;
+    const readyCount = buckets.filter((bucket) => bucket === "review" || bucket === "done").length;
+    return {
+      ideaCount: grouped.size,
+      needsInputCount,
+      readyCount,
+    };
+  }
+
+  function projectStatusLabel(
+    sprint: Sprint | undefined,
+    summary: { needsInputCount: number; readyCount: number }
+  ): string {
+    if (!sprint) return "Quiet";
+    if (sprint.status === "compressing") return "Synthesizing";
+    if (summary.needsInputCount > 0) return "Needs input";
+    if (sprint.status === "ready" || summary.readyCount > 0) return "Ready to compare";
+    return "Exploring";
+  }
+
+  // === Sprint data (kanban frontend) ===
+
+  app.get("/data/projects", (c) => {
+    const teams = listTeams(db);
+    const projects = teams.map((team) => {
+      const activeSprint = getLatestActiveSprint(team.name);
+      const sprintState = activeSprint ? buildSprintState(activeSprint.name) : null;
+      const summary = summarizeSprintIdeas(sprintState);
+      return {
+        id: team.name,
+        name: team.name,
+        mission: team.mission,
+        statusLabel: projectStatusLabel(activeSprint, summary),
+        needsInputCount: summary.needsInputCount,
+        ideaCount: summary.ideaCount,
+        activeSprintName: activeSprint?.name ?? null,
+        activeSprintGoal: activeSprint?.goal ?? null,
+      };
+    });
+
+    const generalSprint = getLatestActiveSprint(GENERAL_PROJECT_ID);
+    if (generalSprint || projects.length === 0) {
+      const sprintState = generalSprint ? buildSprintState(generalSprint.name) : null;
+      const summary = summarizeSprintIdeas(sprintState);
+      projects.push({
+        id: GENERAL_PROJECT_ID,
+        name: "General",
+        mission: "Unassigned work and early exploration.",
+        statusLabel: projectStatusLabel(generalSprint, summary),
+        needsInputCount: summary.needsInputCount,
+        ideaCount: summary.ideaCount,
+        activeSprintName: generalSprint?.name ?? null,
+        activeSprintGoal: generalSprint?.goal ?? null,
+      });
+    }
+
+    projects.sort((a, b) => {
+      const aActive = a.activeSprintName ? 1 : 0;
+      const bActive = b.activeSprintName ? 1 : 0;
+      return (
+        b.needsInputCount - a.needsInputCount ||
+        bActive - aActive ||
+        a.name.localeCompare(b.name)
+      );
+    });
+
+    return c.json(projects);
+  });
+
+  app.get("/data/sprint/latest", (c) => {
+    const teamName = c.req.query("team") || undefined;
+    const row = getLatestActiveSprint(teamName);
     if (!row) {
       return c.json(null);
     }
@@ -864,6 +971,7 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
         name: sprintName,
         goal: body.goal,
         specs: body.tasks,
+        teamName: body.teamName ?? null,
         projectDir: resolvedProjectDir,
         serverUrl,
         db,
@@ -873,7 +981,12 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
       });
       return c.json({ sprintName, agents: spawnedAgents }, 201);
     } catch (e: any) {
-      return c.json({ error: e.message }, e.message.includes("already exists") ? 409 : 500);
+      const status = e.message.includes("already exists")
+        ? 409
+        : e.message.includes("does not exist")
+          ? 400
+          : 500;
+      return c.json({ error: e.message }, status);
     }
   });
 

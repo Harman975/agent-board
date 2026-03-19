@@ -1,41 +1,80 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { SprintState, WSEvent, applyWSEvent, TabId } from './types';
+import { ProjectSummary, SprintState, WSEvent, applyWSEvent, TabId } from './types';
 import { WSClient } from './ws';
 import { ActionBar } from './components/ActionBar';
-import { KanbanBoard } from './components/KanbanBoard';
 import { TabBar } from './components/TabBar';
 import { FeedPanel } from './components/FeedPanel';
 import { LogsPanel } from './components/LogsPanel';
 import { SprintLauncher } from './components/SprintLauncher';
-import { LandingBrief } from './components/LandingBrief';
 import { Sidebar } from './components/Sidebar';
 import { ChatPanel } from './components/ChatPanel';
 import { NodeMap } from './components/NodeMap';
+import { BoardPanel } from './components/BoardPanel';
 
 export const App: React.FC = () => {
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [sprint, setSprint] = useState<SprintState | null>(null);
+  const [focusedIdeaId, setFocusedIdeaId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabId>('kanban');
+  const [activeTab, setActiveTab] = useState<TabId>('board');
   const [showLauncher, setShowLauncher] = useState(false);
-  const [showBrief, setShowBrief] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [advancedMode, setAdvancedMode] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchProjects = useCallback(async () => {
+    try {
+      const res = await fetch('/data/projects');
+      if (!res.ok) return;
+      const data: ProjectSummary[] = await res.json();
+      setProjects(data);
+      setSelectedProjectId((prev) => {
+        if (prev && data.some((project) => project.id === prev)) {
+          return prev;
+        }
+        return data[0]?.id ?? null;
+      });
+    } catch {
+      // best effort only
+    }
+  }, []);
 
   const handleEvent = useCallback((event: WSEvent) => {
     setSprint((prev) => applyWSEvent(prev, event));
-  }, []);
+    if (event.type !== 'log_line') {
+      void fetchProjects();
+    }
+  }, [fetchProjects]);
 
-  const fetchState = useCallback(async () => {
+  const fetchState = useCallback(async (projectId?: string | null) => {
     try {
-      const res = await fetch('/api/feed');
+      const team = projectId ?? selectedProjectId;
+      const query = team ? `?team=${encodeURIComponent(team)}` : '';
+      const res = await fetch(`/data/sprint/latest${query}`);
       if (res.ok) {
-        const data: SprintState = await res.json();
+        const data = await res.json();
         setSprint(data);
+        if (!data) {
+          setFocusedIdeaId(null);
+        }
       }
     } catch {
       // polling failed, will retry
     }
-  }, []);
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    fetchProjects();
+  }, [fetchProjects]);
+
+  useEffect(() => {
+    fetchState();
+  }, [fetchState]);
+
+  useEffect(() => {
+    setFocusedIdeaId(null);
+  }, [selectedProjectId]);
 
   useEffect(() => {
     const wsUrl =
@@ -50,14 +89,16 @@ export const App: React.FC = () => {
         setConnected(isConnected);
         if (!isConnected) {
           if (!pollRef.current) {
+            fetchProjects();
             fetchState();
-            pollRef.current = setInterval(fetchState, 5000);
+            pollRef.current = setInterval(() => {
+              fetchProjects();
+              fetchState();
+            }, 5000);
           }
-        } else {
-          if (pollRef.current) {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
+        } else if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
         }
       },
     });
@@ -70,29 +111,43 @@ export const App: React.FC = () => {
         clearInterval(pollRef.current);
       }
     };
-  }, [handleEvent, fetchState]);
+  }, [fetchProjects, handleEvent, fetchState]);
+
+  useEffect(() => {
+    if (!advancedMode && (activeTab === 'logs' || activeTab === 'architecture')) {
+      setActiveTab('board');
+    }
+  }, [advancedMode, activeTab]);
+
+  const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
 
   const renderPanel = () => {
     if (showLauncher) {
       return (
         <SprintLauncher
-          onSwitchTab={(tab) => { setShowLauncher(false); setActiveTab(tab); }}
+          projectId={selectedProject?.id ?? null}
+          projectName={selectedProject?.id === '__general__' ? 'General' : selectedProject?.name}
+          onSwitchTab={(tab) => {
+            setShowLauncher(false);
+            setActiveTab(tab);
+            fetchProjects();
+            fetchState();
+          }}
           onClose={() => setShowLauncher(false)}
         />
       );
     }
-    if (showBrief && sprint) {
-      return (
-        <LandingBrief
-          sprintName={sprint.name}
-          onClose={() => setShowBrief(false)}
-        />
-      );
-    }
+
     switch (activeTab) {
-      case 'kanban':
-        return <KanbanBoard agents={sprint?.agents ?? []} />;
-      case 'feed':
+      case 'board':
+        return (
+          <BoardPanel
+            sprint={sprint}
+            projectName={selectedProject?.name ?? null}
+            focusedIdeaId={focusedIdeaId}
+          />
+        );
+      case 'timeline':
         return <FeedPanel />;
       case 'logs':
         return <LogsPanel agents={sprint?.agents ?? []} />;
@@ -103,16 +158,46 @@ export const App: React.FC = () => {
 
   return (
     <div className="app">
-      <ActionBar sprint={sprint} connected={connected} onToggleChat={() => setChatOpen((v) => !v)} chatOpen={chatOpen} />
+      <ActionBar
+        sprint={sprint}
+        projectName={selectedProject?.name ?? null}
+        connected={connected}
+        onToggleChat={() => setChatOpen((value) => !value)}
+        chatOpen={chatOpen}
+        onToggleAdvanced={() => setAdvancedMode((value) => !value)}
+        advancedOpen={advancedMode}
+      />
       <div className="app-body">
         <Sidebar
+          projects={projects}
+          selectedProjectId={selectedProjectId}
           sprint={sprint}
           connected={connected}
           onNewSprint={() => setShowLauncher(true)}
-          onLand={() => setShowBrief(true)}
+          onSelectProject={(projectId) => {
+            setShowLauncher(false);
+            setActiveTab('board');
+            setSprint(null);
+            setSelectedProjectId(projectId);
+          }}
+          onFocusIdea={(ideaId) => {
+            setFocusedIdeaId(ideaId);
+          }}
+          onOpenTab={(tab) => {
+            setShowLauncher(false);
+            setActiveTab(tab);
+          }}
+          advancedMode={advancedMode}
         />
         <div className="main-content">
-          <TabBar activeTab={activeTab} onTabChange={(tab) => { setShowLauncher(false); setShowBrief(false); setActiveTab(tab); }} />
+          <TabBar
+            activeTab={activeTab}
+            onTabChange={(tab) => {
+              setShowLauncher(false);
+              setActiveTab(tab);
+            }}
+            advancedMode={advancedMode}
+          />
           <main>
             {renderPanel()}
           </main>

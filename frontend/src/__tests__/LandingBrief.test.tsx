@@ -35,6 +35,18 @@ const briefData = {
       testCount: 10,
       commitCount: 3,
       lastDagPushMessage: 'refine callback flow',
+      report: {
+        summary: 'This route keeps the callback flow small.',
+        hypothesis: 'The callback path can handle the exchange step.',
+        reused: 'The current callback and session checks.',
+        whyNotExistingCode: 'The current flow stops before the token exchange completes.',
+        whySurvives: 'It reuses the current callback flow and adds only the missing exchange step.',
+        newFiles: null,
+        architecture: null,
+        dataFlow: null,
+        edgeCases: null,
+        tests: '10 checks passed with the new exchange step.',
+      },
     },
     {
       handle: '@backend',
@@ -42,11 +54,23 @@ const briefData = {
       branch: 'agent/backend',
       mission: 'Try middleware-first validation',
       track: 'auth',
-      approachGroup: 'oauth-flow',
+      approachGroup: 'middleware-flow',
       approachLabel: 'middleware-first',
       testCount: 8,
       commitCount: 2,
       lastDagPushMessage: 'prototype middleware route',
+      report: {
+        summary: 'This route centralizes validation before requests reach the handler.',
+        hypothesis: 'Middleware can simplify the handler layer.',
+        reused: null,
+        whyNotExistingCode: null,
+        whySurvives: null,
+        newFiles: null,
+        architecture: null,
+        dataFlow: null,
+        edgeCases: null,
+        tests: '8 checks ran before the route became unstable.',
+      },
     },
   ],
 };
@@ -68,10 +92,10 @@ describe('LandingBrief', () => {
   it('shows loading state', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     renderBrief();
-    expect(screen.getByText('Loading brief...')).toBeInTheDocument();
+    expect(screen.getByText('Loading decision brief...')).toBeInTheDocument();
   });
 
-  it('renders grouped sprint data after fetch', async () => {
+  it('renders the decision brief after fetch', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: true,
       json: async () => briefData,
@@ -79,15 +103,18 @@ describe('LandingBrief', () => {
 
     renderBrief();
     await waitFor(() => {
-      expect(screen.getByText('Landing Brief: Sprint Alpha')).toBeInTheDocument();
+      expect(screen.getByText('Decision Brief')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('auth: oauth-flow')).toBeInTheDocument();
-    expect(screen.getByText('@frontend')).toBeInTheDocument();
-    expect(screen.getByText('@backend')).toBeInTheDocument();
-    expect(screen.getByText('token-exchange')).toBeInTheDocument();
-    expect(screen.getByText('middleware-first')).toBeInTheDocument();
-    expect(screen.getByText(/Synthesis: ready \(40% reduction\)/)).toBeInTheDocument();
+    expect(screen.getByText('Explore auth approaches')).toBeInTheDocument();
+    expect(screen.getByText('Token Exchange is the clearest route right now.')).toBeInTheDocument();
+    expect(screen.getByText('The synthesis pass reduced the surviving change by 40%.')).toBeInTheDocument();
+    expect(screen.getByText('What it reuses')).toBeInTheDocument();
+    expect(screen.getByText('The current callback and session checks.')).toBeInTheDocument();
+    expect(screen.getByText('Why the current code was not enough')).toBeInTheDocument();
+    expect(screen.getByText('The current flow stops before the token exchange completes.')).toBeInTheDocument();
+    expect(screen.getByText('Middleware First')).toBeInTheDocument();
+    expect(screen.getByText('This route is not stable enough to keep yet.')).toBeInTheDocument();
   });
 
   it('shows a fallback when the brief cannot be loaded', async () => {
@@ -97,7 +124,7 @@ describe('LandingBrief', () => {
 
     renderBrief();
     await waitFor(() => {
-      expect(screen.getByText('Unable to load brief.')).toBeInTheDocument();
+      expect(screen.getByText('Unable to load the decision brief.')).toBeInTheDocument();
     });
   });
 
