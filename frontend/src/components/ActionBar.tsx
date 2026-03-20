@@ -3,7 +3,8 @@ import { SprintState, TabId } from '../types';
 import { buildOverviewModel } from '../presentation';
 
 const PRIMARY_TABS: { id: TabId; label: string }[] = [
-  { id: 'board', label: 'Overview' },
+  { id: 'projects', label: 'Projects' },
+  { id: 'board', label: 'Decision board' },
   { id: 'timeline', label: 'Timeline' },
 ];
 
@@ -26,6 +27,7 @@ interface ActionBarProps {
 
 export const ActionBar: React.FC<ActionBarProps> = ({
   sprint,
+  projectName,
   connected,
   activeTab,
   onTabChange,
@@ -40,6 +42,7 @@ export const ActionBar: React.FC<ActionBarProps> = ({
     <header className="action-bar">
       <div className="action-bar-left">
         <h1 className="action-bar-brand">Cognitive Canvas</h1>
+        {projectName && <span className="action-bar-project">{projectName}</span>}
         {sprint && (
           <span className={`action-bar-status-dot ${connected ? 'connected' : 'disconnected'}`}>
             <span className={`connection-dot-inline ${connected ? 'connected' : 'disconnected'}`} />
@@ -85,7 +88,7 @@ export const ActionBar: React.FC<ActionBarProps> = ({
           <input
             className="action-bar-search-input"
             type="text"
-            placeholder="Command + K to search"
+            placeholder="Search ideas..."
             readOnly
           />
         </div>

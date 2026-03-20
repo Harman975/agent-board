@@ -72,6 +72,18 @@ export type BoardTone =
   | 'crashed'
   | 'running';
 
+export interface BoardDrawerLabel {
+  icon: string;
+  label: string;
+}
+
+export interface BoardDrawerSection {
+  id: string;
+  title: string;
+  icon: string;
+  body: string;
+}
+
 export interface BoardTileModel {
   id: string;
   title: string;
@@ -79,6 +91,7 @@ export interface BoardTileModel {
   status: string;
   column: BoardColumnId;
   tone: BoardTone;
+  cardLine: string;
   summary: string;
   whyAlive: string;
   latestSignal: string;
@@ -89,11 +102,16 @@ export interface BoardTileModel {
   whatItReuses: string | null;
   existingCodeGap: string | null;
   evidence: string | null;
+  drawerLabel: BoardDrawerLabel;
+  drawerOverview: string;
+  drawerSections: BoardDrawerSection[];
+  drawerObservation: string;
 }
 
 export interface BoardColumnModel {
   id: BoardColumnId;
   title: string;
+  stage: string;
   description: string;
   tiles: BoardTileModel[];
 }
@@ -173,8 +191,209 @@ function clampSentence(value: string | null | undefined, fallback: string): stri
   return firstSentence(value) ?? fallback;
 }
 
+function sentenceCase(value: string): string {
+  if (!value) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function lowerCaseFirst(value: string): string {
+  if (!value) return value;
+  return value.charAt(0).toLowerCase() + value.slice(1);
+}
+
+function stripTrailingPunctuation(value: string): string {
+  return value.replace(/[.?!]+$/, '').trim();
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function stripFillerPrefixes(value: string): string {
+  return value
+    .replace(/^this route\s+/i, '')
+    .replace(/^the route\s+/i, '')
+    .replace(/^route\s+/i, '')
+    .replace(/^this idea\s+/i, '')
+    .replace(/^the idea\s+/i, '')
+    .replace(/^it\s+/i, '');
+}
+
+function stripSoftQualifiers(value: string): string {
+  return value
+    .replace(/\b(currently|right now|basically|really|simply|just|already)\b/gi, '')
+    .replace(/\b(still)\b/gi, '');
+}
+
+function cleanSentenceCore(value: string | null | undefined, fallback: string): string {
+  const raw = firstSentence(value) ?? fallback;
+  const cleaned = normalizeWhitespace(stripSoftQualifiers(stripFillerPrefixes(raw)));
+  const repaired = /^(is|was|were|has|had|cannot|can not|can't|won't|will not)\b/i.test(cleaned)
+    ? `it ${cleaned}`
+    : cleaned;
+  return sentenceCase(stripTrailingPunctuation(repaired || fallback));
+}
+
+function semanticShorten(value: string, limit = 84): string {
+  let result = normalizeWhitespace(value);
+  const clauses = ['; ', ', because ', ' because ', ', but ', ' but ', ', while ', ' while ', '. '];
+
+  for (const clause of clauses) {
+    if (result.length <= limit || !result.includes(clause)) continue;
+    const candidate = result.split(clause)[0]?.trim();
+    if (candidate && candidate.length >= 28) {
+      result = candidate;
+    }
+  }
+
+  result = normalizeWhitespace(result.replace(/\([^)]*\)/g, ' '));
+
+  if (result.length <= limit) return result;
+
+  const words = result.split(' ');
+  let shortened = '';
+  for (const word of words) {
+    const next = shortened ? `${shortened} ${word}` : word;
+    if (next.length > limit - 1) break;
+    shortened = next;
+  }
+
+  if (!shortened) {
+    return `${result.slice(0, limit - 1).trimEnd()}…`;
+  }
+
+  return shortened.length < result.length ? `${shortened}…` : shortened;
+}
+
+function finishSentence(value: string, limit = 84): string {
+  const shortened = semanticShorten(value, limit);
+  if (shortened.endsWith('…')) return shortened;
+  return /[.?!]$/.test(shortened) ? shortened : `${shortened}.`;
+}
+
+function stripActionLead(value: string): string {
+  return value
+    .replace(/^(try|trying|test|testing|explore|exploring)\s+/i, '')
+    .trim();
+}
+
+function stripBecauseLead(value: string): string {
+  return value.replace(/^because\s+/i, '').trim();
+}
+
+function ensureImplicitSubject(value: string): string {
+  return /^(reuses|keeps|adds|solves|handles|uses|extends|reduces|avoids|simplifies|works|proves)\b/i.test(value)
+    ? `it ${value}`
+    : value;
+}
+
+function extractDecisionPrompt(...sources: Array<string | null | undefined>): string | null {
+  for (const source of sources) {
+    const sentence = firstSentence(source);
+    if (!sentence) continue;
+
+    const whetherMatch = sentence.match(/\bwhether\s+(.+)/i);
+    if (whetherMatch?.[1]) {
+      return finishSentence(`Decide whether ${lowerCaseFirst(stripTrailingPunctuation(whetherMatch[1]))}`, 82);
+    }
+
+    const shouldMatch = sentence.match(/\bshould\s+(.+)/i);
+    if (shouldMatch?.[1]) {
+      const shouldSentence = stripTrailingPunctuation(sentence);
+      const naturalShouldMatch = shouldSentence.match(
+        /^should\s+(.+?)\s+(be|live|stay|use|reuse|move|ship|keep|add|remove|split|run|happen|exist|change|start|stop|continue)\b(.*)$/i,
+      );
+      if (naturalShouldMatch) {
+        const [, subject, verb, rest] = naturalShouldMatch;
+        return finishSentence(`Decide whether ${lowerCaseFirst(subject)} should ${verb}${rest}`, 82);
+      }
+      return finishSentence(
+        `Decide whether ${lowerCaseFirst(shouldSentence.replace(/^should\s+/i, ''))}`,
+        82,
+      );
+    }
+
+    if (sentence.includes('?')) {
+      return finishSentence(sentenceCase(stripTrailingPunctuation(sentence)), 82);
+    }
+  }
+
+  return null;
+}
+
+function combineSentences(...values: Array<string | null | undefined>): string {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of values) {
+    const sentence = firstSentence(value);
+    if (!sentence) continue;
+    const normalized = normalizeWhitespace(stripTrailingPunctuation(sentence).toLowerCase());
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    unique.push(sentenceCase(stripTrailingPunctuation(sentence)));
+    if (unique.length === 2) break;
+  }
+
+  if (unique.length === 0) return '';
+  return finishSentence(unique.join('. '), 180);
+}
+
+function drawerLabelFor(column: BoardColumnId): BoardDrawerLabel {
+  if (column === 'survives') return { icon: 'verified', label: 'Active survivor' };
+  if (column === 'ready_to_compare') return { icon: 'balance', label: 'Ready to compare' };
+  if (column === 'needs_input') return { icon: 'help', label: 'Decision needed' };
+  if (column === 'discarded') return { icon: 'archive', label: 'Archived route' };
+  return { icon: 'science', label: 'Active hypothesis' };
+}
+
+function makeDrawerSection(
+  id: string,
+  title: string,
+  icon: string,
+  body: string | null | undefined,
+): BoardDrawerSection | null {
+  const sentence = firstSentence(body);
+  if (!sentence) return null;
+  return {
+    id,
+    title,
+    icon,
+    body: finishSentence(sentenceCase(stripTrailingPunctuation(sentence)), 180),
+  };
+}
+
 function groupKey(source: OptionLike): string {
   return source.approachGroup ?? source.approachLabel ?? source.track ?? source.handle;
+}
+
+function stripGenericTitleSuffix(value: string): string {
+  return value
+    .replace(/\b(flow|route|path|idea|approach|option|strategy|experiment|prototype)\b$/i, '')
+    .trim();
+}
+
+function fallbackIdeaTitle(...sources: Array<string | null | undefined>): string {
+  for (const source of sources) {
+    const sentence = firstSentence(source);
+    if (!sentence) continue;
+
+    const cleaned = sentence
+      .replace(/^(try|trying|test|testing|explore|exploring|compare|comparing|build|building|create|creating|move|moving|keep|keeping|extend|extending|reuse|reusing|add|adding|remove|removing|choose|choosing)\s+/i, '')
+      .replace(/^(a|an|the)\s+/i, '')
+      .split(/\b(?:to|for|with|because|so that|which)\b/i)[0]
+      .replace(/[.?!]+$/, '')
+      .trim();
+
+    const trimmed = stripGenericTitleSuffix(cleaned);
+    if (!trimmed) continue;
+
+    const words = trimmed.split(/\s+/).slice(0, 4).join(' ');
+    const humanized = humanizeIdentifier(words);
+    if (humanized) return humanized;
+  }
+
+  return 'Working Idea';
 }
 
 function optionTitle(source: OptionLike): string {
@@ -182,7 +401,7 @@ function optionTitle(source: OptionLike): string {
     humanizeIdentifier(source.approachLabel) ??
     humanizeIdentifier(source.approachGroup) ??
     humanizeIdentifier(source.track) ??
-    'Direct route'
+    fallbackIdeaTitle(source.mission, source.lastPost, source.handle)
   );
 }
 
@@ -335,7 +554,7 @@ function buildDecisionSignalMap(brief: LandingBriefData | null): Map<string, Dec
         humanizeIdentifier(primary.approachLabel) ??
         humanizeIdentifier(primary.approachGroup) ??
         humanizeIdentifier(primary.track) ??
-        'Direct route',
+        fallbackIdeaTitle(report?.hypothesis, report?.summary, primary.mission, primary.handle),
       hypothesis: firstSentence(report?.hypothesis),
       whyAlive: clampSentence(
         report?.whySurvives ?? report?.summary ?? primary.mission,
@@ -393,6 +612,145 @@ function boardNextMoveFor(option: OptionCardModel, decision: DecisionSignalGroup
   return option.nextStep;
 }
 
+function boardSummaryFor(option: OptionCardModel, decision: DecisionSignalGroup | null): string {
+  return cleanSentenceCore(decision?.hypothesis ?? option.summary, 'This idea still needs a clearer explanation');
+}
+
+function boardWhyAliveFor(option: OptionCardModel, decision: DecisionSignalGroup | null): string {
+  return cleanSentenceCore(
+    decision?.whyAlive ?? option.summary,
+    'This idea still needs a clearer reason to stay alive',
+  );
+}
+
+function boardLatestSignalFor(option: OptionCardModel, decision: DecisionSignalGroup | null): string {
+  return cleanSentenceCore(
+    decision?.evidence ?? option.latestNote ?? option.memberSentence,
+    'Still gathering the first useful signal',
+  );
+}
+
+function boardCardLineFor(
+  option: OptionCardModel,
+  decision: DecisionSignalGroup | null,
+  column: BoardColumnId,
+  risk: string,
+): string {
+  if (column === 'needs_input') {
+    return (
+      extractDecisionPrompt(decision?.existingCodeGap, option.latestNote, option.summary, risk) ??
+      'Decide what this idea should do before work continues.'
+    );
+  }
+
+  if (column === 'ready_to_compare') {
+    return finishSentence(
+      boardWhyAliveFor(option, decision),
+      84,
+    );
+  }
+
+  if (column === 'survives') {
+    return finishSentence(
+      `Chosen because ${lowerCaseFirst(ensureImplicitSubject(stripBecauseLead(boardWhyAliveFor(option, decision))))}`,
+      84,
+    );
+  }
+
+  if (column === 'discarded') {
+    const reason = cleanSentenceCore(
+      decision?.concern ?? option.latestNote ?? risk,
+      'It did not earn survival',
+    );
+    return finishSentence(`Dropped because ${lowerCaseFirst(stripBecauseLead(reason))}`, 84);
+  }
+
+  const approach = cleanSentenceCore(option.summary, 'A possible direction');
+  return finishSentence(`Testing ${lowerCaseFirst(stripActionLead(approach))}`, 84);
+}
+
+function boardDrawerOverviewFor(
+  option: OptionCardModel,
+  decision: DecisionSignalGroup | null,
+  column: BoardColumnId,
+  risk: string,
+  nextMove: string,
+): string {
+  if (column === 'needs_input') {
+    return combineSentences(
+      extractDecisionPrompt(decision?.existingCodeGap, option.latestNote, option.summary, risk),
+      risk,
+    );
+  }
+  if (column === 'survives') {
+    return combineSentences(decision?.whyAlive, nextMove);
+  }
+  if (column === 'discarded') {
+    return combineSentences(decision?.concern ?? risk, nextMove);
+  }
+  return combineSentences(decision?.hypothesis ?? option.summary, decision?.whyAlive, risk);
+}
+
+function boardDrawerSectionsFor(
+  option: OptionCardModel,
+  decision: DecisionSignalGroup | null,
+  column: BoardColumnId,
+  summary: string,
+  whyAlive: string,
+  latestSignal: string,
+  nextMove: string,
+  risk: string,
+): BoardDrawerSection[] {
+  const sections: Array<BoardDrawerSection | null> = [];
+
+  if (column === 'exploring') {
+    sections.push(
+      makeDrawerSection('trying', 'What this idea is trying', 'science', summary),
+      makeDrawerSection('signal', 'Latest useful signal', 'query_stats', latestSignal),
+      makeDrawerSection('survive', 'What would make it survive', 'favorite', whyAlive),
+      makeDrawerSection('risk', 'What could kill it', 'warning', risk),
+    );
+  } else if (column === 'needs_input') {
+    sections.push(
+      makeDrawerSection(
+        'decision',
+        'Decision to make',
+        'help',
+        extractDecisionPrompt(decision?.existingCodeGap, option.latestNote, option.summary, risk),
+      ),
+      makeDrawerSection('why', 'Why this choice matters', 'balance', risk),
+      makeDrawerSection('resume', 'What resumes after the decision', 'arrow_forward', nextMove),
+    );
+  } else if (column === 'ready_to_compare') {
+    sections.push(
+      makeDrawerSection('credible', 'Why this is credible', 'verified', whyAlive),
+      makeDrawerSection('evidence', 'Best evidence', 'query_stats', latestSignal),
+      makeDrawerSection('tradeoff', 'Main tradeoff', 'warning', risk),
+      makeDrawerSection(
+        'compare',
+        'What to compare it against',
+        'balance',
+        'Compare this idea against the other live options before expanding it further.',
+      ),
+    );
+  } else if (column === 'survives') {
+    sections.push(
+      makeDrawerSection('won', 'Why it won', 'verified', whyAlive),
+      makeDrawerSection('reuse', 'What it reuses', 'recycling', decision?.whatItReuses),
+      makeDrawerSection('build', 'What gets built now', 'arrow_forward', nextMove),
+      makeDrawerSection('risk', 'Open risks', 'warning', risk),
+    );
+  } else if (column === 'discarded') {
+    sections.push(
+      makeDrawerSection('dropped', 'Why it was left behind', 'archive', decision?.concern ?? risk),
+      makeDrawerSection('learned', 'What we learned', 'lightbulb', latestSignal || summary),
+      makeDrawerSection('revisit', 'What would need to change', 'restart_alt', nextMove),
+    );
+  }
+
+  return sections.filter((section): section is BoardDrawerSection => section !== null);
+}
+
 export function buildBoardModel(
   sprint: SprintState | null,
   brief: LandingBriefData | null,
@@ -403,55 +761,83 @@ export function buildBoardModel(
 
   const tiles = optionCards.map<BoardTileModel>((option) => {
     const decision = decisionSignals.get(option.id) ?? null;
+    const column = boardColumnFor(option, decision);
+    const tone = boardToneFor(option, decision);
+    const risk = boardRiskFor(option, decision);
+    const nextMove = boardNextMoveFor(option, decision);
+    const summary = boardSummaryFor(option, decision);
+    const whyAlive = boardWhyAliveFor(option, decision);
+    const latestSignal = boardLatestSignalFor(option, decision);
+    const cardLine = boardCardLineFor(option, decision, column, risk);
+
     return {
       id: option.id,
       title: option.title,
       track: option.track,
       status: decision ? decisionStatusCopy(decision.tone) : option.status,
-      column: boardColumnFor(option, decision),
-      tone: boardToneFor(option, decision),
-      summary: decision?.hypothesis ?? option.summary,
-      whyAlive: decision?.whyAlive ?? option.summary,
-      latestSignal: decision?.evidence ?? option.latestNote ?? option.memberSentence,
-      nextMove: boardNextMoveFor(option, decision),
-      risk: boardRiskFor(option, decision),
+      column,
+      tone,
+      cardLine,
+      summary,
+      whyAlive,
+      latestSignal,
+      nextMove,
+      risk,
       memberSentence: option.memberSentence,
       hypothesis: decision?.hypothesis ?? null,
       whatItReuses: decision?.whatItReuses ?? null,
       existingCodeGap: decision?.existingCodeGap ?? null,
       evidence: decision?.evidence ?? null,
+      drawerLabel: drawerLabelFor(column),
+      drawerOverview: boardDrawerOverviewFor(option, decision, column, risk, nextMove) || cardLine,
+      drawerSections: boardDrawerSectionsFor(
+        option,
+        decision,
+        column,
+        summary,
+        whyAlive,
+        latestSignal,
+        nextMove,
+        risk,
+      ),
+      drawerObservation: latestSignal || nextMove || whyAlive || summary,
     };
   });
 
   const columns: BoardColumnModel[] = [
     {
+      id: 'exploring',
+      title: 'Exploring',
+      stage: 'Observe',
+      description: 'Routes are still gathering signal. Keep them light and comparative.',
+      tiles: tiles.filter((tile) => tile.column === 'exploring'),
+    },
+    {
       id: 'needs_input',
       title: 'Needs input',
-      description: 'Routes that are blocked on a human call.',
+      stage: 'Orient blocked',
+      description: 'A human decision is blocking progress. Resolve the question before more buildout.',
       tiles: tiles.filter((tile) => tile.column === 'needs_input'),
     },
     {
       id: 'ready_to_compare',
       title: 'Ready to compare',
-      description: 'Routes with enough signal to judge against each other.',
+      stage: 'Orient complete',
+      description: 'These routes have enough proof to judge side by side now.',
       tiles: tiles.filter((tile) => tile.column === 'ready_to_compare'),
-    },
-    {
-      id: 'exploring',
-      title: 'Still exploring',
-      description: 'Routes that are still collecting signal and should stay narrow.',
-      tiles: tiles.filter((tile) => tile.column === 'exploring'),
     },
     {
       id: 'survives',
       title: 'Survives',
-      description: 'Routes that currently deserve to make it through synthesis.',
+      stage: 'Decide',
+      description: 'The clearest route earns continuation. Build only around this direction.',
       tiles: tiles.filter((tile) => tile.column === 'survives'),
     },
     {
       id: 'discarded',
-      title: 'Discarded for now',
-      description: 'Routes that were explored but do not deserve to survive as they are.',
+      title: 'Discarded',
+      stage: 'Closed',
+      description: 'Explored routes that taught us something and did not earn survival.',
       tiles: tiles.filter((tile) => tile.column === 'discarded'),
     },
   ];
@@ -496,7 +882,7 @@ export function buildDecisionBriefModel(brief: LandingBriefData): DecisionBriefM
         humanizeIdentifier(primary.approachLabel) ??
         humanizeIdentifier(primary.approachGroup) ??
         humanizeIdentifier(primary.track) ??
-        'Direct route',
+        fallbackIdeaTitle(report?.hypothesis, report?.summary, primary.mission, primary.handle),
       status: decisionStatusCopy(tone),
       tone,
       verdict:

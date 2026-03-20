@@ -1030,6 +1030,80 @@ describe("GET /data/projects", () => {
   });
 });
 
+describe("GET /data/projects/:id/collaborators", () => {
+  it("returns active agents and project members", async () => {
+    db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run(
+      "alpha", "Alpha mission", "@admin"
+    );
+    db.prepare("INSERT INTO agents (handle, name, role, mission) VALUES (?, ?, ?, ?)").run(
+      "@builder", "Builder", "worker", "Build alpha"
+    );
+    db.prepare("INSERT INTO team_members (team_name, agent_handle) VALUES (?, ?)").run(
+      "alpha", "@builder"
+    );
+    db.prepare("INSERT INTO sprints (name, goal, team_name) VALUES (?, ?, ?)").run(
+      "alpha-sprint", "Explore alpha", "alpha"
+    );
+    db.prepare(
+      "INSERT INTO sprint_agents (sprint_name, agent_handle, mission, track, approach_group, approach_label) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run("alpha-sprint", "@builder", "Try a cleaner alpha route", "clarity", "alpha-route", "alpha-route");
+    db.prepare("INSERT INTO posts (id, author, channel, content, metadata) VALUES (?, ?, ?, ?, ?)").run(
+      "p-alpha", "@builder", "#general", "Latest alpha signal.", "{}"
+    );
+
+    const res = await app.request("/data/projects/alpha/collaborators");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.project.name, "alpha");
+    assert.equal(data.activeAgents.length, 1);
+    assert.equal(data.activeAgents[0].handle, "@builder");
+    assert.equal(data.members.length, 2);
+  });
+});
+
+describe("GET /data/projects/:id/archive", () => {
+  it("returns archive stats and records", async () => {
+    db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run(
+      "alpha", "Alpha mission", "@admin"
+    );
+    db.prepare("INSERT INTO sprints (name, goal, team_name, status, finished_at) VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))").run(
+      "alpha-finished", "Ship alpha", "alpha", "finished"
+    );
+    db.prepare("INSERT INTO sprints (name, goal, team_name, status, finished_at) VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))").run(
+      "alpha-failed", "Retry alpha", "alpha", "failed"
+    );
+
+    const res = await app.request("/data/projects/alpha/archive");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.stats.archivedCount, 2);
+    assert.equal(data.stats.completedCount, 1);
+    assert.equal(data.stats.failedCount, 1);
+    assert.equal(data.records.length, 2);
+  });
+});
+
+describe("GET /data/projects/:id/settings", () => {
+  it("returns workspace settings and configured tools", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, ".mcp.json"),
+      JSON.stringify({ agentboard: { command: "node", args: ["dist/mcp.js"] } })
+    );
+    const testApp = createApp(db, tmpDir);
+
+    db.prepare("INSERT INTO teams (name, mission, manager) VALUES (?, ?, ?)").run(
+      "alpha", "Alpha mission", "@admin"
+    );
+
+    const res = await testApp.request("/data/projects/alpha/settings");
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.workspace.name, "alpha");
+    assert.ok(Array.isArray(data.connectedTools));
+    assert.ok(data.connectedTools.some((tool: any) => tool.name === "agentboard"));
+  });
+});
+
 describe("GET /data/sprint/:name", () => {
   it("returns 404 for unknown sprint", async () => {
     const res = await app.request("/data/sprint/nonexistent");

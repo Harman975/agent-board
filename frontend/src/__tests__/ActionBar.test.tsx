@@ -65,7 +65,8 @@ describe('ActionBar', () => {
 
   it('shows navigation tabs', () => {
     renderBar();
-    expect(screen.getByRole('tab', { name: 'Overview' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Projects' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Decision board' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Timeline' })).toBeInTheDocument();
   });
 

@@ -5,6 +5,7 @@ import { buildOptionCards, buildOverviewModel } from '../presentation';
 interface SidebarProps {
   projects: ProjectSummary[];
   selectedProjectId: string | null;
+  activeTab: TabId;
   sprint: SprintState | null;
   connected: boolean;
   onNewSprint: () => void;
@@ -34,6 +35,7 @@ const TONE_DOTS: Record<string, string> = {
 export const Sidebar: React.FC<SidebarProps> = ({
   projects,
   selectedProjectId,
+  activeTab,
   sprint,
   connected,
   onNewSprint,
@@ -48,7 +50,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside className="sidebar" aria-label="Sprint sidebar">
-      {/* Project header with brand icon */}
       <div className="sidebar-brand">
         <div className="brand-icon">
           <span className="material-symbols-outlined">token</span>
@@ -65,138 +66,148 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* High-Level Projects nav section */}
-      <div className="sidebar-section-label">High-Level Projects</div>
-      <nav className="sidebar-nav">
+      <div className="sidebar-section-label">Workspace</div>
+      <nav className="sidebar-nav" aria-label="Workspace destinations">
+        <button
+          type="button"
+          className={`sidebar-nav-item${activeTab === 'projects' ? ' active' : ''}`}
+          onClick={() => onOpenTab('projects')}
+        >
+          <span className="material-symbols-outlined">folder_open</span>
+          <span>All projects</span>
+        </button>
+        <button
+          type="button"
+          className={`sidebar-nav-item${activeTab === 'archive' ? ' active' : ''}`}
+          onClick={() => onOpenTab('archive')}
+        >
+          <span className="material-symbols-outlined">inventory_2</span>
+          <span>Archive</span>
+        </button>
+        <button
+          type="button"
+          className={`sidebar-nav-item${activeTab === 'collaborators' ? ' active' : ''}`}
+          onClick={() => onOpenTab('collaborators')}
+        >
+          <span className="material-symbols-outlined">group</span>
+          <span>Collaborators</span>
+        </button>
+        <button
+          type="button"
+          className={`sidebar-nav-item${activeTab === 'settings' ? ' active' : ''}`}
+          onClick={() => onOpenTab('settings')}
+        >
+          <span className="material-symbols-outlined">settings</span>
+          <span>Settings</span>
+        </button>
+      </nav>
+
+      <div className="sidebar-section-label">Projects</div>
+      <nav className="sidebar-nav sidebar-projects" aria-label="Projects">
         {projects.length > 0 ? (
           projects.map((project) => (
-            <a
+            <button
               key={project.id}
-              className={`sidebar-nav-item${selectedProjectId === project.id ? ' active' : ''}`}
+              type="button"
+              className={`sidebar-project-link${selectedProjectId === project.id ? ' active' : ''}`}
               onClick={() => onSelectProject(project.id)}
-              role="button"
-              tabIndex={0}
             >
-              <span className="material-symbols-outlined">folder_open</span>
-              <span>{project.name}</span>
-              {project.needsInputCount > 0 && (
-                <span className="nav-count">{project.needsInputCount}</span>
-              )}
-              {project.needsInputCount === 0 && project.ideaCount > 0 && (
-                <span className="nav-count">{project.ideaCount}</span>
-              )}
-            </a>
+              <div className="sidebar-project-copy">
+                <div className="sidebar-project-line">
+                  <span className="material-symbols-outlined sidebar-project-icon">folder_open</span>
+                  <span className="sidebar-project-link-name">{project.name}</span>
+                </div>
+                <p className="sidebar-project-link-meta">
+                  {project.activeSprintGoal ?? project.mission ?? project.statusLabel}
+                </p>
+              </div>
+              <span className="nav-count">
+                {project.needsInputCount > 0 ? project.needsInputCount : project.ideaCount}
+              </span>
+            </button>
           ))
         ) : (
           <p className="sidebar-empty">No projects yet.</p>
         )}
-
-        <a
-          className="sidebar-nav-item"
-          onClick={() => onOpenTab('board')}
-          role="button"
-          tabIndex={0}
-        >
-          <span className="material-symbols-outlined">dashboard</span>
-          <span>Board</span>
-        </a>
-        <a
-          className="sidebar-nav-item"
-          onClick={() => onOpenTab('timeline')}
-          role="button"
-          tabIndex={0}
-        >
-          <span className="material-symbols-outlined">timeline</span>
-          <span>Timeline</span>
-        </a>
-        {advancedMode && (
-          <>
-            <a
-              className="sidebar-nav-item"
-              onClick={() => onOpenTab('logs')}
-              role="button"
-              tabIndex={0}
-            >
-              <span className="material-symbols-outlined">description</span>
-              <span>Logs</span>
-            </a>
-            <a
-              className="sidebar-nav-item"
-              onClick={() => onOpenTab('architecture')}
-              role="button"
-              tabIndex={0}
-            >
-              <span className="material-symbols-outlined">account_tree</span>
-              <span>Architecture</span>
-            </a>
-          </>
-        )}
       </nav>
 
-      {/* Active Ideas & Routes sub-navigation */}
-      <div className="sidebar-section-label">Active Ideas &amp; Routes</div>
-      <nav className="sidebar-nav">
+      <div className="sidebar-section-label">Ideas</div>
+      <button type="button" className="sidebar-workspace-card" onClick={() => onOpenTab('board')}>
         {selectedProject && sprint ? (
-          <a className="sidebar-nav-item sub-nav" role="button" tabIndex={0}>
-            <span className="material-symbols-outlined text-secondary">lightbulb</span>
-            <span>Current Workspace</span>
-            {sprint && (
-              <span className="nav-elapsed">
-                {elapsed(sprint.createdAt)}
-              </span>
-            )}
-          </a>
+          <>
+            <div className="sidebar-workspace-line">
+              <span className="material-symbols-outlined sidebar-project-icon">lightbulb</span>
+              <span>Current workspace</span>
+            </div>
+            <p className="sidebar-workspace-title">{sprint.goal}</p>
+            <p className="sidebar-workspace-meta">{elapsed(sprint.createdAt)} in play</p>
+          </>
         ) : (
-          <a className="sidebar-nav-item sub-nav" role="button" tabIndex={0}>
-            <span className="material-symbols-outlined text-secondary">lightbulb</span>
-            <span>No active workspace</span>
-          </a>
+          <>
+            <div className="sidebar-workspace-line">
+              <span className="material-symbols-outlined sidebar-project-icon">lightbulb</span>
+              <span>Current workspace</span>
+            </div>
+            <p className="sidebar-workspace-title">No active workspace</p>
+            <p className="sidebar-workspace-meta">Start a sprint to make the board come alive.</p>
+          </>
         )}
+      </button>
 
+      <nav className="sidebar-nav sidebar-ideas" aria-label="Ideas">
         {ideas.length > 0 ? (
           ideas.map((idea) => (
-            <a
+            <button
               key={idea.id}
-              className="sidebar-nav-sub"
+              type="button"
+              className="sidebar-idea-link"
               onClick={() => {
                 onOpenTab('board');
                 onFocusIdea(idea.id);
               }}
-              role="button"
-              tabIndex={0}
             >
-              <div
-                className="idea-dot"
-                style={{ background: TONE_DOTS[idea.tone] ?? 'var(--planning)' }}
-              />
-              <span className="sidebar-nav-sub-label">{idea.title}</span>
+              <div className="sidebar-idea-line">
+                <div
+                  className="idea-dot"
+                  style={{ background: TONE_DOTS[idea.tone] ?? 'var(--planning)' }}
+                />
+                <span className="sidebar-nav-sub-label">{idea.title}</span>
+              </div>
               <span className={`sidebar-nav-sub-status tone-${idea.tone}`}>{idea.status}</span>
-            </a>
+            </button>
           ))
         ) : (
           <p className="sidebar-empty">Ideas will appear here once a sprint starts.</p>
         )}
       </nav>
 
-      {/* Clarity compact summary */}
-      <div className="sidebar-clarity">
-        <div className="sidebar-section-label">Clarity</div>
-        <p className="sidebar-clarity-phase">{overview.phase}</p>
+      <div className="sidebar-section-label">Current picture</div>
+      <div className="sidebar-clarity-card">
+        <p className="sidebar-clarity-phase">{overview.summary}</p>
         <p className="sidebar-clarity-text">{overview.recommendation}</p>
       </div>
 
-      {/* Settings nav item */}
-      <a className="sidebar-nav-item sidebar-settings" role="button" tabIndex={0}>
-        <span className="material-symbols-outlined">tune</span>
-        <span>Settings</span>
-      </a>
-
-      {/* Bottom actions */}
       <div className="sidebar-bottom">
         <button className="btn-primary sidebar-btn" onClick={onNewSprint}>
           <span className="material-symbols-outlined btn-icon">add</span>
           + New Project
         </button>
+        <button className="btn-secondary sidebar-btn" onClick={() => onOpenTab('timeline')}>
+          <span className="material-symbols-outlined btn-icon">timeline</span>
+          Open timeline
+        </button>
+        {advancedMode && (
+          <>
+            <button className="btn-secondary sidebar-btn" onClick={() => onOpenTab('logs')}>
+              <span className="material-symbols-outlined btn-icon">description</span>
+              Open logs
+            </button>
+            <button className="btn-secondary sidebar-btn" onClick={() => onOpenTab('architecture')}>
+              <span className="material-symbols-outlined btn-icon">account_tree</span>
+              View architecture
+            </button>
+          </>
+        )}
         <div className="sidebar-connection">
           <span className={`connection-dot ${connected ? 'connected' : 'disconnected'}`} />
           <span>{connected ? 'Live updates' : 'Polling for changes'}</span>

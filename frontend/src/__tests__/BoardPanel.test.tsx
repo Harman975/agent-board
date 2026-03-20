@@ -137,10 +137,13 @@ describe('BoardPanel', () => {
       expect(screen.getByText('Explore auth approaches')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('Survives')).toBeInTheDocument();
-    expect(screen.getByText('Discarded for now')).toBeInTheDocument();
+    expect(screen.getByText(/Survives/)).toBeInTheDocument();
+    expect(screen.getByText('Discarded')).toBeInTheDocument();
     expect(screen.getByText('Token Exchange')).toBeInTheDocument();
     expect(screen.getByText('Middleware First')).toBeInTheDocument();
+    expect(screen.getByText(/Chosen because it reuses the current callback flow/i)).toBeInTheDocument();
+    expect(screen.queryByText('Approach')).not.toBeInTheDocument();
+    expect(screen.queryByText('Evidence')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Token Exchange/i }));
 
@@ -148,9 +151,10 @@ describe('BoardPanel', () => {
       expect(screen.getByLabelText('Token Exchange details')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('Why the current code is not enough')).toBeInTheDocument();
-    expect(screen.getByText('The current flow stops before the token exchange completes.')).toBeInTheDocument();
+    expect(screen.getByText('Why it won')).toBeInTheDocument();
     expect(screen.getByText('What it reuses')).toBeInTheDocument();
     expect(screen.getByText('The current callback and session checks.')).toBeInTheDocument();
+    expect(screen.getByText('What gets built now')).toBeInTheDocument();
+    expect(screen.queryByText('Promote to Survives')).not.toBeInTheDocument();
   });
 });

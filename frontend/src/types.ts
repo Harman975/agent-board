@@ -41,6 +41,88 @@ export interface ProjectSummary {
   activeSprintGoal: string | null;
 }
 
+export interface ProjectCollaboratorAgent {
+  handle: string;
+  name: string;
+  role: string;
+  focus: string;
+  status: string;
+  recentActivity: string;
+}
+
+export interface ProjectCollaboratorMember {
+  handle: string;
+  name: string;
+  role: string;
+  permissions: string;
+  recentActivity: string;
+}
+
+export interface ProjectCollaboratorsData {
+  project: {
+    id: string;
+    name: string;
+    mission: string;
+    manager: string | null;
+    statusLabel: string;
+    activeSprintName: string | null;
+  };
+  activeAgents: ProjectCollaboratorAgent[];
+  members: ProjectCollaboratorMember[];
+}
+
+export interface ProjectArchiveRecord {
+  name: string;
+  goal: string;
+  statusLabel: string;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export interface ProjectArchiveData {
+  project: {
+    id: string;
+    name: string;
+    mission: string;
+  };
+  stats: {
+    successRate: number;
+    archivedCount: number;
+    completedCount: number;
+    failedCount: number;
+  };
+  featured: ProjectArchiveRecord | null;
+  records: ProjectArchiveRecord[];
+}
+
+export interface ProjectToolSummary {
+  name: string;
+  scope: 'project' | 'global';
+  status: string;
+  note: string;
+}
+
+export interface ProjectPreferenceSummary {
+  id: string;
+  label: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface ProjectSettingsData {
+  workspace: {
+    id: string;
+    name: string;
+    mission: string;
+    manager: string | null;
+    statusLabel: string;
+    activeSprintGoal: string | null;
+    memberCount: number;
+  };
+  connectedTools: ProjectToolSummary[];
+  preferences: ProjectPreferenceSummary[];
+}
+
 export interface FeedPost {
   id: string;
   author: string;
@@ -132,7 +214,11 @@ export interface WSEvent {
 }
 
 export type TabId =
+  | 'projects'
   | 'board'
+  | 'collaborators'
+  | 'archive'
+  | 'settings'
   | 'timeline'
   | 'logs'
   | 'architecture';

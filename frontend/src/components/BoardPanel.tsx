@@ -12,11 +12,6 @@ interface BoardPanelProps {
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-function compactCopy(value: string, limit = 96): string {
-  if (value.length <= limit) return value;
-  return `${value.slice(0, limit).trimEnd()}...`;
-}
-
 /** Map tile tone to a tag pill CSS modifier class. */
 function tagPillClass(tone: string): string {
   if (tone === 'in_progress' || tone === 'running') return 'tag-pill-indigo';
@@ -28,22 +23,12 @@ function tagPillClass(tone: string): string {
 
 /** Map column / status to a human tag pill label. */
 function tagPillLabel(tile: BoardTileModel): string {
-  if (tile.column === 'survives') return 'VALIDATED';
-  if (tile.column === 'discarded') return 'DISCARDED';
-  if (tile.column === 'exploring') return 'HYPOTHESIS';
-  if (tile.column === 'ready_to_compare') return 'READY';
-  if (tile.column === 'needs_input') return 'BLOCKED';
-  return tile.status.toUpperCase();
-}
-
-/** Extract initials from memberSentence or return a fallback. */
-function agentInitials(memberSentence: string): string[] {
-  const countMatch = memberSentence.match(/^(\d+) agents?/);
-  if (countMatch) {
-    const count = Math.min(parseInt(countMatch[1], 10), 4);
-    return Array.from({ length: count }, (_, i) => `A${i + 1}`);
-  }
-  return ['A1'];
+  if (tile.column === 'survives') return 'Winning route';
+  if (tile.column === 'discarded') return 'Discarded';
+  if (tile.column === 'exploring') return 'Hypothesis';
+  if (tile.column === 'ready_to_compare') return 'Ready';
+  if (tile.column === 'needs_input') return 'Decision needed';
+  return tile.status;
 }
 
 /** Rough relative time from an ISO date string. */
@@ -74,8 +59,8 @@ const COLUMN_DOTS: Record<string, string> = {
 const EMPTY_COLUMN_MESSAGES: Record<string, { icon: string; text: string }> = {
   needs_input: { icon: 'check_circle', text: 'Nothing blocked right now.' },
   ready_to_compare: { icon: 'hourglass_empty', text: 'No routes ready to compare yet.' },
-  exploring: { icon: 'rocket_launch', text: 'AI Generating...' },
-  survives: { icon: 'emoji_events', text: 'No Active Build' },
+  exploring: { icon: 'rocket_launch', text: 'No live routes are exploring right now.' },
+  survives: { icon: 'emoji_events', text: 'Nothing has earned survival yet.' },
   discarded: { icon: 'inventory_2', text: 'Nothing discarded yet.' },
 };
 
@@ -156,6 +141,7 @@ export const BoardPanel: React.FC<BoardPanelProps> = ({ sprint, projectName, foc
             PROJECTS{projectName ? ` > ${projectName.toUpperCase()}` : ''}
           </p>
           <h2 className="board-title">Judgment Workspace</h2>
+          <p className="board-lede">{sprint.goal}</p>
         </div>
         <div className="board-header-actions">
           <button type="button" className="btn-secondary board-filter-btn">
@@ -166,25 +152,6 @@ export const BoardPanel: React.FC<BoardPanelProps> = ({ sprint, projectName, foc
             <span className="material-symbols-outlined btn-icon">auto_awesome</span>
             Synthesize All
           </button>
-        </div>
-      </div>
-
-      {/* ---- Summary stats ---- */}
-      <div className="board-summary">
-        <div className="board-stat-row">
-          {board.stats.map((stat, i) => {
-            const icons = ['lightbulb', 'error_outline', 'compare_arrows'];
-            return (
-              <article key={stat.label} className="overview-stat">
-                <p className="overview-stat-label">
-                  <span className="material-symbols-outlined stat-icon">{icons[i] ?? 'analytics'}</span>
-                  {stat.label}
-                </p>
-                <p className="overview-stat-value">{stat.value}</p>
-                <p className="overview-stat-note">{stat.note}</p>
-              </article>
-            );
-          })}
         </div>
       </div>
 
@@ -201,7 +168,7 @@ export const BoardPanel: React.FC<BoardPanelProps> = ({ sprint, projectName, foc
                       className="board-column-dot"
                       style={{ background: COLUMN_DOTS[column.id] ?? 'var(--planning)' }}
                     />
-                    {column.title}
+                    {column.title} ({column.stage})
                   </p>
                   <p className="board-column-description">{column.description}</p>
                 </div>
@@ -220,7 +187,6 @@ export const BoardPanel: React.FC<BoardPanelProps> = ({ sprint, projectName, foc
                       isSurvives={column.id === 'survives'}
                       isActive={selectedTile?.id === tile.id}
                       onClick={() => setSelectedId(tile.id)}
-                      sprintCreatedAt={sprint.createdAt}
                     />
                   ))
                 )}
@@ -265,7 +231,10 @@ export const BoardPanel: React.FC<BoardPanelProps> = ({ sprint, projectName, foc
                 onClick={() => setSelectedId(tile.id)}
               >
                 <span className="material-symbols-outlined chip-icon">close</span>
-                <span>{tile.title}</span>
+                <span className="discarded-chip-copy">
+                  <span className="discarded-chip-title">{tile.title}</span>
+                  <span className="discarded-chip-line">{tile.cardLine}</span>
+                </span>
               </button>
             ))}
           </div>
@@ -298,76 +267,25 @@ interface BoardCardProps {
   isSurvives: boolean;
   isActive: boolean;
   onClick: () => void;
-  sprintCreatedAt: string;
 }
 
-const BoardCard: React.FC<BoardCardProps> = ({ tile, isSurvives, isActive, onClick, sprintCreatedAt }) => {
-  const initials = agentInitials(tile.memberSentence);
-  const showWarning = tile.column === 'needs_input' && tile.risk;
-
+const BoardCard: React.FC<BoardCardProps> = ({ tile, isSurvives, isActive, onClick }) => {
   return (
     <button
       type="button"
       className={`board-tile tone-${tile.tone} ${isActive ? 'active' : ''} ${isSurvives ? 'board-tile-survives' : ''}`}
       onClick={onClick}
     >
-      {/* Tag pill + agent pulse */}
       <div className="board-tile-top">
         <span className={`board-tile-tag-pill ${tagPillClass(tile.tone)}`}>
           {tagPillLabel(tile)}
         </span>
-        {isSurvives ? (
-          <span className="material-symbols-outlined board-tile-verified-icon">verified</span>
-        ) : (
-          <span className={`board-tile-pulse tone-${tile.tone}`} />
-        )}
+        <span className={`board-tile-status-dot tone-${tile.tone}`} />
       </div>
 
-      {/* Survives: trophy label */}
-      {isSurvives && (
-        <div className="board-tile-trophy">
-          <span className="material-symbols-outlined trophy-icon">trophy</span>
-          <span className="trophy-label">Selection 01</span>
-        </div>
-      )}
-
-      {/* Title */}
+      {tile.track && <p className="board-tile-context">{tile.track}</p>}
       <p className="board-tile-title">{tile.title}</p>
-
-      {/* Description */}
-      <p className="board-tile-summary">{compactCopy(tile.summary, 120)}</p>
-
-      {/* Warning label (needs_input only) */}
-      {showWarning && (
-        <div className="board-tile-warning">
-          <span className="material-symbols-outlined warning-icon">error_outline</span>
-          <span>{compactCopy(tile.risk, 48).toUpperCase()}</span>
-        </div>
-      )}
-
-      {/* Track tags */}
-      {tile.track && (
-        <div className="board-tile-tags">
-          <span className="board-tile-tag-chip">{tile.track}</span>
-        </div>
-      )}
-
-      {/* Footer: timestamp + agent avatars */}
-      <div className="board-tile-footer">
-        <span className="board-tile-timestamp">{relativeTime(sprintCreatedAt)}</span>
-        <div className="board-tile-avatars">
-          {initials.map((initial, idx) => (
-            <span key={idx} className="board-tile-avatar">{initial}</span>
-          ))}
-        </div>
-      </div>
-
-      {/* Survives: impact map button */}
-      {isSurvives && (
-        <div className="board-tile-impact-row">
-          <span className="board-tile-impact-btn">VIEW IMPACT MAP</span>
-        </div>
-      )}
+      <p className="board-tile-line">{tile.cardLine}</p>
     </button>
   );
 };
@@ -383,8 +301,6 @@ interface RouteDrawerProps {
 }
 
 const RouteDrawer: React.FC<RouteDrawerProps> = ({ tile, sprintCreatedAt, onClose }) => {
-  const initials = agentInitials(tile.memberSentence);
-
   return (
     <div className="route-drawer-overlay" onClick={onClose}>
       {/* Close button floating outside the drawer */}
@@ -402,13 +318,11 @@ const RouteDrawer: React.FC<RouteDrawerProps> = ({ tile, sprintCreatedAt, onClos
         aria-label={`${tile.title} details`}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Drawer header */}
         <div className="route-drawer-header">
           <div>
             <p className="route-drawer-kicker">
-              <span className={`board-tile-tag-pill ${tagPillClass(tile.tone)}`}>
-                {tagPillLabel(tile)}
-              </span>
+              <span className="material-symbols-outlined route-drawer-kicker-icon">{tile.drawerLabel.icon}</span>
+              <span>{tile.drawerLabel.label}</span>
             </p>
             <h3 className="route-drawer-title">{tile.title}</h3>
             <div className="route-drawer-meta">
@@ -420,118 +334,52 @@ const RouteDrawer: React.FC<RouteDrawerProps> = ({ tile, sprintCreatedAt, onClos
                 <span className="material-symbols-outlined meta-icon">group</span>
                 {tile.memberSentence}
               </span>
+              {tile.track && (
+                <span className="route-drawer-meta-item">
+                  <span className="material-symbols-outlined meta-icon">category</span>
+                  {tile.track} track
+                </span>
+              )}
             </div>
           </div>
         </div>
 
         <div className="route-drawer-body">
-          {/* Detailed Overview */}
           <div className="route-drawer-overview">
             <h4 className="route-drawer-section-heading">Detailed Overview</h4>
-            <p className="route-drawer-overview-text">{tile.summary}</p>
+            <p className="route-drawer-overview-text">{tile.drawerOverview}</p>
           </div>
 
-          {/* Evidence grid */}
-          {(tile.evidence || tile.whatItReuses || tile.existingCodeGap || tile.latestSignal) && (
-            <div className="route-drawer-evidence-section">
-              <h4 className="route-drawer-section-heading">Evidence</h4>
-              <div className="route-drawer-evidence-grid">
-                {tile.latestSignal && (
-                  <article className="route-drawer-evidence-card">
-                    <span className="material-symbols-outlined evidence-card-icon">query_stats</span>
-                    <p className="evidence-card-label">Latest signal</p>
-                    <p className="evidence-card-text">{tile.latestSignal}</p>
-                  </article>
-                )}
-                {tile.evidence && (
-                  <article className="route-drawer-evidence-card">
-                    <span className="material-symbols-outlined evidence-card-icon">description</span>
-                    <p className="evidence-card-label">Test evidence</p>
-                    <p className="evidence-card-text">{tile.evidence}</p>
-                  </article>
-                )}
-                {tile.whatItReuses && (
-                  <article className="route-drawer-evidence-card">
-                    <span className="material-symbols-outlined evidence-card-icon">recycling</span>
-                    <p className="evidence-card-label">What it reuses</p>
-                    <p className="evidence-card-text">{tile.whatItReuses}</p>
-                  </article>
-                )}
-                {tile.existingCodeGap && (
-                  <article className="route-drawer-evidence-card">
-                    <span className="material-symbols-outlined evidence-card-icon">code_off</span>
-                    <p className="evidence-card-label">Why existing code falls short</p>
-                    <p className="evidence-card-text">{tile.existingCodeGap}</p>
-                  </article>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Risk Assessment */}
-          {tile.risk && (
-            <div className="route-drawer-risk">
-              <h4 className="route-drawer-section-heading">Risk Assessment</h4>
-              <div className="route-drawer-risk-box">
-                <span className="material-symbols-outlined risk-box-icon">warning</span>
-                <p className="risk-box-text">{tile.risk}</p>
-              </div>
-            </div>
-          )}
-
-          {/* Why Alive / Next Move */}
-          {tile.whyAlive && (
-            <div className="route-drawer-section">
+          {tile.drawerSections.map((section) => (
+            <div key={section.id} className="route-drawer-section">
               <h4 className="route-drawer-section-heading">
-                <span className="material-symbols-outlined section-heading-icon">favorite</span>
-                Why it is still alive
+                <span className="material-symbols-outlined section-heading-icon">{section.icon}</span>
+                {section.title}
               </h4>
-              <p className="route-drawer-text">{tile.whyAlive}</p>
+              <p className="route-drawer-text">{section.body}</p>
             </div>
-          )}
+          ))}
 
-          {tile.nextMove && (
-            <div className="route-drawer-section">
-              <h4 className="route-drawer-section-heading">
-                <span className="material-symbols-outlined section-heading-icon">arrow_forward</span>
-                Next move
-              </h4>
-              <p className="route-drawer-text">{tile.nextMove}</p>
-            </div>
-          )}
-
-          {/* Agent Observations */}
           <div className="route-drawer-agents">
             <h4 className="route-drawer-section-heading">Agent Observations</h4>
             <div className="route-drawer-agent-card">
-              <div className="route-drawer-agent-avatars">
-                {initials.map((initial, idx) => (
-                  <span key={idx} className="board-tile-avatar">{initial}</span>
-                ))}
+              <div className="route-drawer-agent-icon">
+                <span className="material-symbols-outlined">smart_toy</span>
               </div>
-              <p className="route-drawer-agent-quote">{tile.memberSentence}</p>
+              <div className="route-drawer-agent-copy">
+                <p className="route-drawer-agent-quote">"{tile.drawerObservation}"</p>
+                <p className="route-drawer-agent-meta">
+                  {tile.memberSentence.toUpperCase()} • {relativeTime(sprintCreatedAt)}
+                </p>
+              </div>
             </div>
           </div>
-
-          {/* Track tag */}
-          {tile.track && (
-            <div className="route-drawer-track">
-              <span className="board-tile-tag-chip">{tile.track}</span>
-            </div>
-          )}
         </div>
 
-        {/* Drawer footer actions */}
         <div className="route-drawer-footer">
-          {tile.column !== 'survives' && (
-            <button type="button" className="btn-gradient drawer-promote-btn">
-              <span className="material-symbols-outlined btn-icon">arrow_upward</span>
-              Promote to Survives
-            </button>
-          )}
-          <button type="button" className="btn-outline drawer-archive-btn">
-            <span className="material-symbols-outlined btn-icon">archive</span>
-            Archive Idea
+          <button type="button" className="btn-outline drawer-close-btn" onClick={onClose}>
+            <span className="material-symbols-outlined btn-icon">close</span>
+            Close
           </button>
         </div>
       </aside>

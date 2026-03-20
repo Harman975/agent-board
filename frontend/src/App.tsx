@@ -1,5 +1,14 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { ProjectSummary, SprintState, WSEvent, applyWSEvent, TabId } from './types';
+import {
+  ProjectArchiveData,
+  ProjectCollaboratorsData,
+  ProjectSettingsData,
+  ProjectSummary,
+  SprintState,
+  WSEvent,
+  applyWSEvent,
+  TabId,
+} from './types';
 import { WSClient } from './ws';
 import { ActionBar } from './components/ActionBar';
 import { FeedPanel } from './components/FeedPanel';
@@ -9,11 +18,18 @@ import { Sidebar } from './components/Sidebar';
 import { ChatPanel } from './components/ChatPanel';
 import { NodeMap } from './components/NodeMap';
 import { BoardPanel } from './components/BoardPanel';
+import { ProjectsPanel } from './components/ProjectsPanel';
+import { CollaboratorsPanel } from './components/CollaboratorsPanel';
+import { ArchivePanel } from './components/ArchivePanel';
+import { SettingsPanel } from './components/SettingsPanel';
 
 export const App: React.FC = () => {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [sprint, setSprint] = useState<SprintState | null>(null);
+  const [collaborators, setCollaborators] = useState<ProjectCollaboratorsData | null>(null);
+  const [archive, setArchive] = useState<ProjectArchiveData | null>(null);
+  const [settings, setSettings] = useState<ProjectSettingsData | null>(null);
   const [focusedIdeaId, setFocusedIdeaId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('board');
@@ -39,12 +55,37 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  const fetchProjectPanels = useCallback(async (projectId?: string | null) => {
+    const id = projectId ?? selectedProjectId;
+    if (!id) {
+      setCollaborators(null);
+      setArchive(null);
+      setSettings(null);
+      return;
+    }
+
+    try {
+      const [collabRes, archiveRes, settingsRes] = await Promise.all([
+        fetch(`/data/projects/${encodeURIComponent(id)}/collaborators`),
+        fetch(`/data/projects/${encodeURIComponent(id)}/archive`),
+        fetch(`/data/projects/${encodeURIComponent(id)}/settings`),
+      ]);
+
+      if (collabRes.ok) setCollaborators(await collabRes.json());
+      if (archiveRes.ok) setArchive(await archiveRes.json());
+      if (settingsRes.ok) setSettings(await settingsRes.json());
+    } catch {
+      // best effort only
+    }
+  }, [selectedProjectId]);
+
   const handleEvent = useCallback((event: WSEvent) => {
     setSprint((prev) => applyWSEvent(prev, event));
     if (event.type !== 'log_line') {
       void fetchProjects();
+      void fetchProjectPanels();
     }
-  }, [fetchProjects]);
+  }, [fetchProjectPanels, fetchProjects]);
 
   const fetchState = useCallback(async (projectId?: string | null) => {
     try {
@@ -72,6 +113,10 @@ export const App: React.FC = () => {
   }, [fetchState]);
 
   useEffect(() => {
+    fetchProjectPanels();
+  }, [fetchProjectPanels]);
+
+  useEffect(() => {
     setFocusedIdeaId(null);
   }, [selectedProjectId]);
 
@@ -90,9 +135,11 @@ export const App: React.FC = () => {
           if (!pollRef.current) {
             fetchProjects();
             fetchState();
+            fetchProjectPanels();
             pollRef.current = setInterval(() => {
               fetchProjects();
               fetchState();
+              fetchProjectPanels();
             }, 5000);
           }
         } else if (pollRef.current) {
@@ -110,7 +157,7 @@ export const App: React.FC = () => {
         clearInterval(pollRef.current);
       }
     };
-  }, [fetchProjects, handleEvent, fetchState]);
+  }, [fetchProjectPanels, fetchProjects, handleEvent, fetchState]);
 
   useEffect(() => {
     if (!advancedMode && (activeTab === 'logs' || activeTab === 'architecture')) {
@@ -131,6 +178,7 @@ export const App: React.FC = () => {
             setActiveTab(tab);
             fetchProjects();
             fetchState();
+            fetchProjectPanels();
           }}
           onClose={() => setShowLauncher(false)}
         />
@@ -138,6 +186,18 @@ export const App: React.FC = () => {
     }
 
     switch (activeTab) {
+      case 'projects':
+        return (
+          <ProjectsPanel
+            projects={projects}
+            selectedProjectId={selectedProjectId}
+            onSelectProject={(projectId) => {
+              setSelectedProjectId(projectId);
+              setActiveTab('board');
+              setShowLauncher(false);
+            }}
+          />
+        );
       case 'board':
         return (
           <BoardPanel
@@ -146,6 +206,12 @@ export const App: React.FC = () => {
             focusedIdeaId={focusedIdeaId}
           />
         );
+      case 'collaborators':
+        return <CollaboratorsPanel data={collaborators} />;
+      case 'archive':
+        return <ArchivePanel data={archive} />;
+      case 'settings':
+        return <SettingsPanel data={settings} />;
       case 'timeline':
         return <FeedPanel />;
       case 'logs':
@@ -175,6 +241,7 @@ export const App: React.FC = () => {
         <Sidebar
           projects={projects}
           selectedProjectId={selectedProjectId}
+          activeTab={activeTab}
           sprint={sprint}
           connected={connected}
           onNewSprint={() => setShowLauncher(true)}

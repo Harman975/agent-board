@@ -702,31 +702,12 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
     return "Exploring";
   }
 
-  // === Sprint data (kanban frontend) ===
-
-  app.get("/data/projects", (c) => {
-    const teams = listTeams(db);
-    const projects = teams.map((team) => {
-      const activeSprint = getLatestActiveSprint(team.name);
-      const sprintState = activeSprint ? buildSprintState(activeSprint.name) : null;
-      const summary = summarizeSprintIdeas(sprintState);
-      return {
-        id: team.name,
-        name: team.name,
-        mission: team.mission,
-        statusLabel: projectStatusLabel(activeSprint, summary),
-        needsInputCount: summary.needsInputCount,
-        ideaCount: summary.ideaCount,
-        activeSprintName: activeSprint?.name ?? null,
-        activeSprintGoal: activeSprint?.goal ?? null,
-      };
-    });
-
-    const generalSprint = getLatestActiveSprint(GENERAL_PROJECT_ID);
-    if (generalSprint || projects.length === 0) {
+  function buildProjectSummary(projectId: string) {
+    if (projectId === GENERAL_PROJECT_ID) {
+      const generalSprint = getLatestActiveSprint(GENERAL_PROJECT_ID);
       const sprintState = generalSprint ? buildSprintState(generalSprint.name) : null;
       const summary = summarizeSprintIdeas(sprintState);
-      projects.push({
+      return {
         id: GENERAL_PROJECT_ID,
         name: "General",
         mission: "Unassigned work and early exploration.",
@@ -735,7 +716,100 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
         ideaCount: summary.ideaCount,
         activeSprintName: generalSprint?.name ?? null,
         activeSprintGoal: generalSprint?.goal ?? null,
-      });
+        manager: null,
+      };
+    }
+
+    const team = getTeam(db, projectId);
+    if (!team) return null;
+    const activeSprint = getLatestActiveSprint(team.name);
+    const sprintState = activeSprint ? buildSprintState(activeSprint.name) : null;
+    const summary = summarizeSprintIdeas(sprintState);
+    return {
+      id: team.name,
+      name: team.name,
+      mission: team.mission,
+      statusLabel: projectStatusLabel(activeSprint, summary),
+      needsInputCount: summary.needsInputCount,
+      ideaCount: summary.ideaCount,
+      activeSprintName: activeSprint?.name ?? null,
+      activeSprintGoal: activeSprint?.goal ?? null,
+      manager: team.manager,
+    };
+  }
+
+  function listConfiguredToolServers() {
+    const tools: { name: string; scope: "project" | "global"; status: string; note: string }[] = [];
+
+    try {
+      const localPath = path.join(resolvedProjectDir, ".mcp.json");
+      if (fs.existsSync(localPath)) {
+        const parsed = JSON.parse(fs.readFileSync(localPath, "utf-8")) as Record<string, unknown>;
+        for (const name of Object.keys(parsed)) {
+          tools.push({
+            name,
+            scope: "project",
+            status: "Configured",
+            note: "Available from the project MCP config.",
+          });
+        }
+      }
+    } catch {
+      // ignore invalid local MCP config in dashboard summaries
+    }
+
+    try {
+      const globalPath = path.join(os.homedir(), ".codex", "config.toml");
+      if (fs.existsSync(globalPath)) {
+        const content = fs.readFileSync(globalPath, "utf-8");
+        const matches = [...content.matchAll(/^\[mcp_servers\.([^\]]+)\]/gm)];
+        for (const match of matches) {
+          const name = match[1];
+          if (!tools.some((tool) => tool.name === name && tool.scope === "global")) {
+            tools.push({
+              name,
+              scope: "global",
+              status: "Configured",
+              note: "Available from the global Codex MCP config.",
+            });
+          }
+        }
+      }
+    } catch {
+      // ignore invalid global MCP config in dashboard summaries
+    }
+
+    tools.sort((a, b) => {
+      if (a.scope !== b.scope) return a.scope === "project" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    return tools;
+  }
+
+  function latestActivityFor(handle: string): string {
+    const row = db.prepare(
+      "SELECT content, created_at FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT 1"
+    ).get(handle) as { content: string; created_at: string } | undefined;
+    if (!row?.content) return "No recent activity has been recorded yet.";
+    return row.content.split("\n")[0].trim() || "No recent activity has been recorded yet.";
+  }
+
+  // === Sprint data (kanban frontend) ===
+
+  app.get("/data/projects", (c) => {
+    const teams = listTeams(db);
+    const projects = teams.reduce<NonNullable<ReturnType<typeof buildProjectSummary>>[]>(
+      (all, team) => {
+        const summary = buildProjectSummary(team.name);
+        if (summary) all.push(summary);
+        return all;
+      },
+      []
+    );
+
+    const generalProject = buildProjectSummary(GENERAL_PROJECT_ID);
+    if (generalProject && (generalProject.activeSprintName || projects.length === 0)) {
+      projects.push(generalProject);
     }
 
     projects.sort((a, b) => {
@@ -749,6 +823,175 @@ export function createApp(db: Database.Database, projectDir?: string, emitter?: 
     });
 
     return c.json(projects);
+  });
+
+  app.get("/data/projects/:id/collaborators", (c) => {
+    const projectId = c.req.param("id");
+    const project = buildProjectSummary(projectId);
+    if (!project) return c.json({ error: "Project not found" }, 404);
+
+    const sprint = project.activeSprintName ? buildSprintState(project.activeSprintName) : null;
+    const activeAgents = (sprint?.agents ?? []).map((agent) => {
+      const row = getAgent(db, agent.handle);
+      const status =
+        agent.alive
+          ? "Running"
+          : agent.exitCode === 0
+            ? "Completed current pass"
+            : "Waiting for a retry";
+
+      return {
+        handle: agent.handle,
+        name: row?.name ?? agent.handle.replace(/^@/, ""),
+        role: row?.role ?? "worker",
+        focus: agent.mission,
+        status,
+        recentActivity: latestActivityFor(agent.handle),
+      };
+    });
+
+    let members = [] as {
+      handle: string;
+      name: string;
+      role: string;
+      permissions: string;
+      recentActivity: string;
+    }[];
+
+    if (projectId !== GENERAL_PROJECT_ID) {
+      const memberRows = db.prepare(`
+        SELECT a.handle, a.name, a.role
+        FROM team_members tm
+        JOIN agents a ON a.handle = tm.agent_handle
+        WHERE tm.team_name = ?
+        ORDER BY a.name ASC
+      `).all(projectId) as { handle: string; name: string; role: string }[];
+
+      const knownHandles = new Set(memberRows.map((row) => row.handle));
+      if (project.manager && !knownHandles.has(project.manager)) {
+        const managerRow = getAgent(db, project.manager);
+        if (managerRow) {
+          memberRows.unshift({
+            handle: managerRow.handle,
+            name: managerRow.name,
+            role: managerRow.role,
+          });
+        }
+      }
+
+      members = memberRows.map((member) => ({
+        handle: member.handle,
+        name: member.name,
+        role: member.role,
+        permissions:
+          member.handle === project.manager
+            ? "Manager"
+            : member.role === "manager"
+              ? "Lead"
+              : member.role === "worker"
+                ? "Editor"
+                : "Viewer",
+        recentActivity: latestActivityFor(member.handle),
+      }));
+    }
+
+    return c.json({
+      project: {
+        id: project.id,
+        name: project.name,
+        mission: project.mission,
+        manager: project.manager,
+        statusLabel: project.statusLabel,
+        activeSprintName: project.activeSprintName,
+      },
+      activeAgents,
+      members,
+    });
+  });
+
+  app.get("/data/projects/:id/archive", (c) => {
+    const projectId = c.req.param("id");
+    const project = buildProjectSummary(projectId);
+    if (!project) return c.json({ error: "Project not found" }, 404);
+
+    const rows = (projectId === GENERAL_PROJECT_ID
+      ? db.prepare(
+          "SELECT * FROM sprints WHERE team_name IS NULL AND status IN ('finished', 'failed') ORDER BY COALESCE(finished_at, created_at) DESC"
+        ).all()
+      : db.prepare(
+          "SELECT * FROM sprints WHERE team_name = ? AND status IN ('finished', 'failed') ORDER BY COALESCE(finished_at, created_at) DESC"
+        ).all(projectId)) as Sprint[];
+
+    const completedCount = rows.filter((row) => row.status === "finished").length;
+    const failedCount = rows.filter((row) => row.status === "failed").length;
+    const archivedCount = rows.length;
+
+    const records = rows.map((row) => ({
+      name: row.name,
+      goal: row.goal,
+      statusLabel: row.status === "finished" ? "Completed" : "Closed after failure",
+      createdAt: row.created_at,
+      finishedAt: row.finished_at,
+    }));
+
+    return c.json({
+      project: {
+        id: project.id,
+        name: project.name,
+        mission: project.mission,
+      },
+      stats: {
+        successRate: archivedCount === 0 ? 0 : Math.round((completedCount / archivedCount) * 1000) / 10,
+        archivedCount,
+        completedCount,
+        failedCount,
+      },
+      featured: records[0] ?? null,
+      records,
+    });
+  });
+
+  app.get("/data/projects/:id/settings", (c) => {
+    const projectId = c.req.param("id");
+    const project = buildProjectSummary(projectId);
+    if (!project) return c.json({ error: "Project not found" }, 404);
+
+    const memberCount = projectId === GENERAL_PROJECT_ID
+      ? 0
+      : (db.prepare("SELECT COUNT(*) as count FROM team_members WHERE team_name = ?").get(projectId) as { count: number }).count;
+
+    return c.json({
+      workspace: {
+        id: project.id,
+        name: project.name,
+        mission: project.mission,
+        manager: project.manager,
+        statusLabel: project.statusLabel,
+        activeSprintGoal: project.activeSprintGoal,
+        memberCount,
+      },
+      connectedTools: listConfiguredToolServers(),
+      preferences: [
+        {
+          id: "live_updates",
+          label: "Live board updates",
+          description: "Keep the board refreshed with background sprint events.",
+          enabled: true,
+        },
+        {
+          id: "project_inbox",
+          label: "Project decision reminders",
+          description: "Highlight routes that need your input before more work happens.",
+          enabled: true,
+        },
+        {
+          id: "email_digest",
+          label: "Email summary digest",
+          description: "Prepare a concise daily summary of archived and active project changes.",
+          enabled: false,
+        },
+      ],
+    });
   });
 
   app.get("/data/sprint/latest", (c) => {
